@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.env
+.env.*
+!.env.example
+output/
+*.cache.json
+questions.enriched.json
+*.docx
+*.md
+!README.md
+!docs/**/*.md
+!skills/**/*.md
