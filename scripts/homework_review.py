@@ -12,12 +12,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Callable, Iterable
+from xml.sax.saxutils import escape
 
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MAX_TOKENS = 2000
+DEFAULT_DOCX_FONT = "Microsoft YaHei"
 QUESTION_FONT_SIZE_PT = 13
 CALLOUT_FONT_SIZE_PT = 12
+TIP_SHADE = "FFF4D6"
+LINE_COLOR = "000000"
 
 
 def normalize_question_text(text: str) -> str:
@@ -66,6 +71,7 @@ def question_key(question: dict) -> str:
 def load_questions(input_path: Path | str) -> list[dict]:
     root = Path(input_path)
     files = sorted(root.rglob("*.json")) if root.is_dir() else [root]
+    files = [file_path for file_path in files if is_source_json_file(file_path)]
     questions: list[dict] = []
     seen: set[str] = set()
 
@@ -87,6 +93,49 @@ def load_questions(input_path: Path | str) -> list[dict]:
     return questions
 
 
+def is_source_json_file(file_path: Path) -> bool:
+    generated_names = {
+        "questions.enriched.json",
+        "questions.partial.json",
+        "explanations.cache.json",
+    }
+    generated_dirs = {
+        "output",
+        "final-output",
+        "progress-test-output",
+        "layout-test-output",
+        "verify-test-output",
+        "review-card-test-output",
+        "student-review-test-output",
+        "json-mode-test-output",
+        "api-test-output",
+    }
+    if file_path.name in generated_names:
+        return False
+    return not any(part in generated_dirs for part in file_path.parts)
+
+
+def apply_limit(questions: list[dict], limit: int | None) -> list[dict]:
+    if not limit or limit <= 0:
+        return questions
+    return questions[:limit]
+
+
+def log_progress(
+    stage: str,
+    index: int,
+    total: int,
+    question: str,
+    logger: Callable[[str], None] = print,
+) -> None:
+    title = re.sub(r"\s+", " ", question or "").strip()
+    if len(title) > 48:
+        title = title[:45] + "..."
+    logger(f"[{index}/{total}] {stage}：{title}", flush=True) if logger is print else logger(
+        f"[{index}/{total}] {stage}：{title}"
+    )
+
+
 def load_cache(cache_path: Path | None) -> dict[str, dict]:
     if not cache_path or not cache_path.exists():
         return {}
@@ -94,8 +143,27 @@ def load_cache(cache_path: Path | None) -> dict[str, dict]:
 
 
 def save_json(path: Path, data: object) -> None:
+    save_json_atomic(path, data)
+
+
+def save_json_atomic(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def docx_font_name() -> str:
+    font_name = os.getenv("DOCX_FONT", "").strip()
+    if is_valid_font_name(font_name):
+        return font_name
+    return DEFAULT_DOCX_FONT
+
+
+def is_valid_font_name(font_name: str) -> bool:
+    if not font_name or len(font_name) > 80:
+        return False
+    return bool(re.fullmatch(r"[\w\s\-\u4e00-\u9fff]+", font_name, re.UNICODE))
 
 
 def load_dotenv(path: Path | str = ".env") -> None:
@@ -132,10 +200,12 @@ def build_prompt(question: dict) -> list[dict]:
                 "json 格式示例："
                 '{"correct_reason":"为什么正确答案正确",'
                 '"wrong_options":[{"option":"A","reason":"为什么不选，干扰点在哪"}],'
+                '"review_tip":"复习抓手：看到哪些关键词或条件时应如何快速判断",'
                 '"knowledge_points":["这道题涉及的知识点，需展开说明其含义和复习时要抓住什么"],'
                 '"principles":["这道题背后的判断原理，需说明遇到同类题怎么判断"]}。'
                 "correct_reason 控制在 80 到 150 字；wrong_options 覆盖明显错误选项；"
-                "knowledge_points 和 principles 各给 1 到 4 条，每条 40 到 90 字；"
+                "review_tip 用 1 句话说明考试时如何快速识别答案；"
+                "knowledge_points 和 principles 各给 1 到 4 条，每条 50 到 110 字；"
                 "不要只写标签或名词短语，要展开说明为什么这个知识点与题目有关，"
                 "以及学生复习时应该记住的判断线索。"
             ),
@@ -168,7 +238,7 @@ def call_chat_completion(messages: list[dict]) -> str:
         "model": settings["model"],
         "messages": messages,
         "stream": False,
-        "max_tokens": int(os.getenv("AI_MAX_TOKENS", "1200")),
+        "max_tokens": int(os.getenv("AI_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
         "temperature": float(os.getenv("AI_TEMPERATURE", "0.2")),
         "response_format": {"type": "json_object"},
     }
@@ -212,6 +282,65 @@ def parse_explanation_response(content: str) -> dict:
     return normalize_explanation(data)
 
 
+def build_answer_check_prompt(question: dict) -> list[dict]:
+    options = "\n".join(question.get("options", [])) or "无"
+    user = f"""题型：{question.get("type", "")}
+题目：{question.get("question", "")}
+选项：
+{options}
+导出答案：{question.get("answer", "")}
+
+请独立校验导出答案是否合理，并严格输出 json。"""
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是答案校验器。请先独立判断题目的合理答案，再和导出答案比较。"
+                "不要默认相信导出答案，也不要自动修改答案。必须只输出合法 json，"
+                "不要输出 Markdown。json 格式示例："
+                '{"provided_answer":"导出答案","model_answer":"你独立判断的答案",'
+                '"verdict":"agree|disagree|uncertain",'
+                '"confidence":0.0,'
+                '"risk_level":"low|medium|high",'
+                '"reason":"简要说明为什么一致、不一致或不确定",'
+                '"needs_review":false}。'
+                "如果题目有歧义、多个选项可能成立、信息不足或你不确定，"
+                "verdict 用 uncertain，needs_review 用 true。"
+            ),
+        },
+        {"role": "user", "content": user},
+    ]
+
+
+def parse_answer_check_response(content: str) -> dict:
+    return normalize_answer_check(json.loads(content))
+
+
+def normalize_answer_check(value: object) -> dict:
+    if not isinstance(value, dict):
+        value = {}
+    verdict = str(value.get("verdict", "uncertain")).strip().lower()
+    if verdict not in {"agree", "disagree", "uncertain"}:
+        verdict = "uncertain"
+    risk_level = str(value.get("risk_level", "")).strip().lower()
+    if risk_level not in {"low", "medium", "high"}:
+        risk_level = {"agree": "low", "disagree": "high"}.get(verdict, "medium")
+    try:
+        confidence = float(value.get("confidence", 0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    needs_review = bool(value.get("needs_review", verdict != "agree" or risk_level != "low"))
+    return {
+        "provided_answer": str(value.get("provided_answer", "")).strip(),
+        "model_answer": str(value.get("model_answer", "")).strip(),
+        "verdict": verdict,
+        "confidence": max(0.0, min(1.0, confidence)),
+        "risk_level": risk_level,
+        "reason": str(value.get("reason", "")).strip(),
+        "needs_review": needs_review,
+    }
+
+
 def normalize_explanation(value: object) -> dict:
     if isinstance(value, dict):
         wrong_options = value.get("wrong_options", [])
@@ -234,12 +363,14 @@ def normalize_explanation(value: object) -> dict:
             "wrong_options": [
                 item for item in normalized_wrong_options if item["option"] or item["reason"]
             ],
+            "review_tip": str(value.get("review_tip", "")).strip(),
             "knowledge_points": _string_list(value.get("knowledge_points", [])),
             "principles": _string_list(value.get("principles", [])),
         }
     return {
         "correct_reason": str(value or "").strip(),
         "wrong_options": [],
+        "review_tip": "",
         "knowledge_points": [],
         "principles": [],
     }
@@ -258,28 +389,78 @@ def enrich_questions(
     client: Callable[[list[dict]], str] = call_chat_completion,
     cache: dict[str, dict] | None = None,
     dry_run: bool = False,
+    verify_answers: bool = False,
+    cache_writer: Callable[[dict[str, dict], list[dict]], None] | None = None,
+    logger: Callable[[str], None] = print,
 ) -> list[dict]:
     cache = cache or {}
     enriched: list[dict] = []
-    for question in questions:
+    question_list = list(questions)
+    total = len(question_list)
+    for index, question in enumerate(question_list, 1):
         item = dict(question)
         key = question_key(item)
         cached = cache.get(key)
         if cached and cached.get("explanation"):
+            log_progress("使用缓存", index, total, item.get("question", ""), logger)
             item["explanation"] = normalize_explanation(cached["explanation"])
-            item["explanation_source"] = cached.get("explanation_source", "cache")
+            item["cached_explanation_source"] = cached.get("explanation_source", "unknown")
+            item["explanation_source"] = "cache"
+            if cached.get("answer_check"):
+                item["answer_check"] = normalize_answer_check(cached["answer_check"])
         elif item.get("explanation"):
+            log_progress("使用原解析", index, total, item.get("question", ""), logger)
             item["explanation"] = normalize_explanation(item["explanation"])
             item["explanation_source"] = item.get("explanation_source", "platform")
         elif dry_run:
+            log_progress("dry-run 占位", index, total, item.get("question", ""), logger)
             item["explanation"] = normalize_explanation(
                 {"correct_reason": "待生成：dry-run 模式未调用 AI API。"}
             )
             item["explanation_source"] = "missing"
         else:
-            item["explanation"] = parse_explanation_response(client(build_prompt(item)))
-            item["explanation_source"] = "ai"
+            log_progress("生成解析", index, total, item.get("question", ""), logger)
+            try:
+                item["explanation"] = parse_explanation_response(client(build_prompt(item)))
+                item["explanation_source"] = "ai"
+            except Exception as exc:
+                item["explanation"] = normalize_explanation(
+                    {
+                        "correct_reason": (
+                            "生成解析失败。请查看 processing_error 字段后重试，"
+                            "或人工补充本题解析。"
+                        )
+                    }
+                )
+                item["explanation_source"] = "failed"
+                item["processing_error"] = str(exc)
+                log_progress("解析失败", index, total, item.get("question", ""), logger)
+        if verify_answers and not item.get("answer_check") and item.get("explanation_source") != "failed":
+            log_progress("答案校验", index, total, item.get("question", ""), logger)
+            try:
+                item["answer_check"] = parse_answer_check_response(
+                    client(build_answer_check_prompt(item))
+                )
+            except Exception as exc:
+                item["answer_check"] = normalize_answer_check(
+                    {
+                        "provided_answer": item.get("answer", ""),
+                        "model_answer": "",
+                        "verdict": "uncertain",
+                        "confidence": 0,
+                        "risk_level": "medium",
+                        "reason": f"答案校验失败：{exc}",
+                        "needs_review": True,
+                    }
+                )
+                item["processing_error"] = (
+                    f"{item.get('processing_error', '')}\n答案校验失败：{exc}"
+                ).strip()
+                log_progress("校验失败", index, total, item.get("question", ""), logger)
         enriched.append(item)
+        if cache_writer:
+            cache = update_cache(cache, [item])
+            cache_writer(cache, enriched)
     return enriched
 
 
@@ -287,11 +468,47 @@ def update_cache(cache: dict[str, dict], questions: Iterable[dict]) -> dict[str,
     updated = dict(cache)
     for question in questions:
         if question.get("explanation") and question.get("explanation_source") != "missing":
-            updated[question_key(question)] = {
+            cached_question = {
                 "explanation": normalize_explanation(question["explanation"]),
                 "explanation_source": question.get("explanation_source", "ai"),
             }
+            if question.get("answer_check"):
+                cached_question["answer_check"] = normalize_answer_check(question["answer_check"])
+            updated[question_key(question)] = cached_question
     return updated
+
+
+def build_run_summary(questions: list[dict]) -> dict[str, int]:
+    summary = {
+        "total": len(questions),
+        "cache": 0,
+        "ai": 0,
+        "platform": 0,
+        "missing": 0,
+        "failed": 0,
+        "review_needed": 0,
+    }
+    for question in questions:
+        source = question.get("explanation_source", "missing")
+        if source in summary:
+            summary[source] += 1
+        if question.get("answer_check") and normalize_answer_check(question["answer_check"])[
+            "needs_review"
+        ]:
+            summary["review_needed"] += 1
+    return summary
+
+
+def print_run_summary(summary: dict[str, int], output_dir: Path, title: str) -> None:
+    print("处理汇总：", flush=True)
+    print(f"- 总题数：{summary['total']}", flush=True)
+    print(f"- 使用缓存：{summary['cache']}", flush=True)
+    print(f"- 新生成解析：{summary['ai']}", flush=True)
+    print(f"- 处理失败：{summary['failed']}", flush=True)
+    print(f"- 需复核：{summary['review_needed']}", flush=True)
+    print(f"- Word：{output_dir / f'{title}.docx'}", flush=True)
+    print(f"- Markdown：{output_dir / f'{title}.md'}", flush=True)
+    print(f"- 复核清单：{output_dir / 'review-needed.md'}", flush=True)
 
 
 def render_markdown(questions: list[dict], title: str) -> str:
@@ -306,52 +523,117 @@ def render_markdown(questions: list[dict], title: str) -> str:
             [
                 f"### {index}. {question.get('question', '')}",
                 "",
-                f"**答案：{question.get('answer', '')}**",
-                "",
-                f"题型：{question.get('type', '')}",
+                f"> **答案：{question.get('answer', '')}**",
+                f"> 题型：{question.get('type', '')}",
                 "",
             ]
         )
         for option in question.get("options", []):
-            lines.append(f"- {option}")
+            lines.append(f"- {format_option_markdown(option, question.get('answer', ''))}")
         if question.get("options"):
             lines.append("")
         source = question.get("explanation_source", "unknown")
         explanation_lines = render_explanation_markdown(question.get("explanation"))
+        answer_check_lines = render_answer_check_markdown(question.get("answer_check"))
         lines.extend(
             [
                 "**解析**",
                 "",
+                *answer_check_lines,
                 *explanation_lines,
                 f"解析来源：{_source_label(source)}",
+                "",
+                "---",
                 "",
             ]
         )
     return "\n".join(lines).strip() + "\n"
 
 
+def render_answer_check_markdown(answer_check: object) -> list[str]:
+    if not answer_check:
+        return []
+    item = normalize_answer_check(answer_check)
+    if not item["needs_review"] and item["risk_level"] == "low":
+        return []
+    return [
+        "**答案可能需要复核**",
+        "这道题的导出答案与模型校验结果存在差异或不确定，详见 review-needed.md。",
+        "",
+    ]
+
+
 def render_explanation_markdown(explanation: object) -> list[str]:
     item = normalize_explanation(explanation)
     lines = [
-        "**正确答案解析：**",
+        "**为什么选：**",
         item["correct_reason"] or "暂无解析。",
         "",
     ]
     if item["wrong_options"]:
-        lines.extend(["**干扰项分析：**", ""])
+        lines.extend(["**为什么不选：**", ""])
         for wrong in item["wrong_options"]:
             prefix = f"{wrong['option']}：" if wrong["option"] else ""
             lines.append(f"- {prefix}{wrong['reason']}")
         lines.append("")
+    if item["review_tip"]:
+        lines.extend(["**复习抓手：**", f"> {item['review_tip']}", ""])
     if item["knowledge_points"]:
-        lines.extend(["**相关知识点：**", ""])
+        lines.extend(["**知识补充：**", ""])
         lines.extend([f"- {point}" for point in item["knowledge_points"]])
         lines.append("")
     if item["principles"]:
-        lines.extend(["**关联原理：**", ""])
+        lines.extend(["**同类题判断法：**", ""])
         lines.extend([f"- {principle}" for principle in item["principles"]])
         lines.append("")
     return lines
+
+
+def render_review_needed_markdown(questions: list[dict], title: str) -> str:
+    flagged = [
+        question
+        for question in questions
+        if question.get("answer_check")
+        and normalize_answer_check(question["answer_check"])["needs_review"]
+    ]
+    lines = [f"# {title}", "", f"需复核题目数：{len(flagged)}", ""]
+    for index, question in enumerate(flagged, 1):
+        check = normalize_answer_check(question["answer_check"])
+        lines.extend(
+            [
+                f"## {index}. {question.get('question', '')}",
+                "",
+                f"课程：{question.get('courseName', '未命名课程')}",
+                "",
+                f"导出答案：{check['provided_answer'] or question.get('answer', '')}",
+                "",
+                f"模型判断：{check['model_answer'] or '未提供'}",
+                "",
+                f"风险等级：{check['risk_level']}，置信度：{check['confidence']:.2f}",
+                "",
+                f"理由：{check['reason'] or '未提供'}",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip() + "\n"
+
+
+def format_option_markdown(option: str, answer: str) -> str:
+    if is_correct_option(option, answer):
+        return f"**{option}** ✅"
+    return option
+
+
+def is_correct_option(option: str, answer: str) -> bool:
+    label_match = re.match(r"^([A-Z])\.\s*(.*)$", option.strip())
+    option_label = label_match.group(1) if label_match else ""
+    option_text = re.sub(r"^[A-Z]\.\s*", "", option).strip()
+    answer_parts = [
+        re.sub(r"^[A-Z]\.\s*", "", part.strip())
+        for part in re.split(r"[；;,，、\s]+", str(answer))
+        if part.strip()
+    ]
+    return any(part == option_label or part == option_text for part in answer_parts)
 
 
 def _source_label(source: str) -> str:
@@ -369,6 +651,7 @@ def write_docx(questions: list[dict], title: str, output_path: Path) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
+    configure_document_styles(document)
     document.add_heading(title, level=0)
     current_course = None
     for index, question in enumerate(questions, 1):
@@ -386,12 +669,42 @@ def write_docx(questions: list[dict], title: str, output_path: Path) -> None:
         answer_run.bold = True
         answer_run.font.size = Pt(CALLOUT_FONT_SIZE_PT)
         answer_run.font.color.rgb = RGBColor(0, 0, 0)
-        document.add_paragraph(f"题型：{question.get('type', '')}")
+        answer_paragraph.add_run(f"\n题型：{question.get('type', '')}")
         for option in question.get("options", []):
-            document.add_paragraph(option, style="List Bullet")
+            paragraph = document.add_paragraph(style="List Bullet")
+            run = paragraph.add_run(option)
+            if is_correct_option(option, question.get("answer", "")):
+                run.bold = True
+                run.font.color.rgb = RGBColor(34, 139, 34)
+                paragraph.add_run("  ✅")
+        add_answer_check_docx(document, question.get("answer_check"))
         add_explanation_docx(document, question.get("explanation"))
         document.add_paragraph(f"解析来源：{_source_label(question.get('explanation_source', 'unknown'))}")
+        add_separator(document)
     document.save(output_path)
+
+
+def configure_document_styles(document) -> None:
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
+
+    font_name = docx_font_name()
+    normal = document.styles["Normal"]
+    normal.font.name = font_name
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
+    normal.font.size = Pt(10.5)
+    normal.paragraph_format.space_after = Pt(8)
+    normal.paragraph_format.line_spacing = 1.15
+
+
+def add_answer_check_docx(document, answer_check: object) -> None:
+    if not answer_check:
+        return
+    item = normalize_answer_check(answer_check)
+    if not item["needs_review"] and item["risk_level"] == "low":
+        return
+    add_callout_paragraph(document, "答案可能需要复核")
+    add_body_paragraph(document, "这道题的导出答案与模型校验结果存在差异或不确定，详见 review-needed.md。")
 
 
 def add_explanation_docx(document, explanation: object) -> None:
@@ -399,21 +712,25 @@ def add_explanation_docx(document, explanation: object) -> None:
 
     item = normalize_explanation(explanation)
     add_callout_paragraph(document, "解析")
-    add_callout_paragraph(document, "正确答案解析：")
-    document.add_paragraph(item["correct_reason"] or "暂无解析。")
+    add_callout_paragraph(document, "为什么选：")
+    add_body_paragraph(document, item["correct_reason"] or "暂无解析。")
     if item["wrong_options"]:
-        add_callout_paragraph(document, "干扰项分析：")
+        add_callout_paragraph(document, "为什么不选：")
         for wrong in item["wrong_options"]:
             prefix = f"{wrong['option']}：" if wrong["option"] else ""
-            document.add_paragraph(f"{prefix}{wrong['reason']}", style="List Bullet")
+            add_list_paragraph(document, f"{prefix}{wrong['reason']}")
+    if item["review_tip"]:
+        add_callout_paragraph(document, "复习抓手：")
+        tip = add_body_paragraph(document, item["review_tip"])
+        shade_paragraph(tip, TIP_SHADE)
     if item["knowledge_points"]:
-        add_callout_paragraph(document, "相关知识点：")
+        add_callout_paragraph(document, "知识补充：")
         for point in item["knowledge_points"]:
-            document.add_paragraph(point, style="List Bullet")
+            add_list_paragraph(document, point)
     if item["principles"]:
-        add_callout_paragraph(document, "关联原理：")
+        add_callout_paragraph(document, "同类题判断法：")
         for principle in item["principles"]:
-            document.add_paragraph(principle, style="List Bullet")
+            add_list_paragraph(document, principle)
 
 
 def add_callout_paragraph(document, text: str) -> None:
@@ -426,6 +743,51 @@ def add_callout_paragraph(document, text: str) -> None:
     run.font.color.rgb = RGBColor(0, 0, 0)
 
 
+def add_body_paragraph(document, text: str):
+    from docx.shared import Pt
+
+    paragraph = document.add_paragraph(text)
+    paragraph.paragraph_format.left_indent = Pt(12)
+    paragraph.paragraph_format.space_after = Pt(8)
+    paragraph.paragraph_format.line_spacing = 1.18
+    return paragraph
+
+
+def add_list_paragraph(document, text: str):
+    from docx.shared import Pt
+
+    paragraph = document.add_paragraph(text, style="List Bullet")
+    paragraph.paragraph_format.left_indent = Pt(18)
+    paragraph.paragraph_format.space_after = Pt(6)
+    paragraph.paragraph_format.line_spacing = 1.15
+    return paragraph
+
+
+def shade_paragraph(paragraph, fill: str) -> None:
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    paragraph._p.get_or_add_pPr().append(
+        parse_xml(f'<w:shd {nsdecls("w")} w:fill="{escape(fill)}"/>')
+    )
+
+
+def add_separator(document) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    paragraph = document.add_paragraph()
+    p_pr = paragraph._p.get_or_add_pPr()
+    borders = OxmlElement("w:pBdr")
+    bottom = OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "dashed")
+    bottom.set(qn("w:sz"), "6")
+    bottom.set(qn("w:space"), "8")
+    bottom.set(qn("w:color"), LINE_COLOR)
+    borders.append(bottom)
+    p_pr.append(borders)
+
+
 def build_outputs(args: argparse.Namespace) -> list[dict]:
     input_path = Path(args.input)
     output_dir = Path(args.output_dir)
@@ -436,16 +798,37 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
         load_dotenv(input_path / ".env")
 
     questions = load_questions(input_path)
+    questions = apply_limit(questions, args.limit)
     cache = load_cache(cache_path)
-    enriched = enrich_questions(questions, cache=cache, dry_run=args.dry_run)
+    cached_count = sum(1 for question in questions if question_key(question) in cache)
+    print(f"输入题目：{len(questions)}", flush=True)
+    print(f"已有缓存：{cached_count}", flush=True)
+    print(f"开启答案校验：{'是' if args.verify_answers and not args.dry_run else '否'}", flush=True)
+
+    def write_progress_cache(progress_cache: dict[str, dict], processed: list[dict]) -> None:
+        save_json(cache_path, progress_cache)
+        save_json(output_dir / "questions.partial.json", processed)
+
+    enriched = enrich_questions(
+        questions,
+        cache=cache,
+        dry_run=args.dry_run,
+        verify_answers=args.verify_answers and not args.dry_run,
+        cache_writer=write_progress_cache,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     save_json(output_dir / "questions.enriched.json", enriched)
     save_json(cache_path, update_cache(cache, enriched))
+    (output_dir / "review-needed.md").write_text(
+        render_review_needed_markdown(enriched, f"{title}-需复核题目"),
+        encoding="utf-8",
+    )
     (output_dir / f"{title}.md").write_text(
         render_markdown(enriched, title), encoding="utf-8"
     )
     write_docx(enriched, title, output_dir / f"{title}.docx")
+    print_run_summary(build_run_summary(enriched), output_dir, title)
     return enriched
 
 
@@ -461,6 +844,16 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Do not call the AI API; mark missing explanations instead.",
+    )
+    parser.add_argument(
+        "--verify-answers",
+        action="store_true",
+        help="Ask the model to independently check exported answers and flag risks.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Process only the first N questions. Useful for testing API output.",
     )
     return parser.parse_args()
 

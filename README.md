@@ -39,7 +39,8 @@ Then edit `.env`:
 AI_API_KEY=your-deepseek-api-key
 AI_BASE_URL=https://api.deepseek.com
 AI_MODEL=deepseek-v4-flash
-AI_MAX_TOKENS=1200
+AI_MAX_TOKENS=2000
+DOCX_FONT=Microsoft YaHei
 ```
 
 The API request uses JSON output mode when supported by the provider. New AI
