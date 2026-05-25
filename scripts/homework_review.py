@@ -72,6 +72,7 @@ def load_questions(input_path: Path | str) -> list[dict]:
     root = Path(input_path)
     files = sorted(root.rglob("*.json")) if root.is_dir() else [root]
     files = [file_path for file_path in files if is_source_json_file(file_path)]
+    files = sorted(files, key=source_file_sort_key)
     questions: list[dict] = []
     seen: set[str] = set()
 
@@ -91,6 +92,44 @@ def load_questions(input_path: Path | str) -> list[dict]:
             questions.append(question)
 
     return questions
+
+
+def source_file_sort_key(file_path: Path) -> tuple[int, int, str]:
+    chapter = extract_chapter_number(file_path.name)
+    if chapter is None:
+        return (1, 0, file_path.name)
+    return (0, chapter, file_path.name)
+
+
+def extract_chapter_number(text: str) -> int | None:
+    match = re.search(r"第([一二三四五六七八九十百千万两\d]+)章", text)
+    if not match:
+        return None
+    token = match.group(1)
+    if token.isdigit():
+        return int(token)
+    return chinese_number_to_int(token)
+
+
+def chinese_number_to_int(text: str) -> int:
+    digits = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    units = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+    total = 0
+    section = 0
+    number = 0
+    for char in text:
+        if char in digits:
+            number = digits[char]
+        elif char in units:
+            unit = units[char]
+            if unit == 10000:
+                section = (section + number) * unit
+                total += section
+                section = 0
+            else:
+                section += (number or 1) * unit
+            number = 0
+    return total + section + number
 
 
 def is_source_json_file(file_path: Path) -> bool:
@@ -605,11 +644,25 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
                 "",
                 f"课程：{question.get('courseName', '未命名课程')}",
                 "",
+                f"题型：{question.get('type', '未知')}",
+                "",
+            ]
+        )
+        if question.get("options"):
+            lines.extend(["选项：", ""])
+            lines.extend([f"- {option}" for option in question.get("options", [])])
+            lines.append("")
+        lines.extend(
+            [
                 f"导出答案：{check['provided_answer'] or question.get('answer', '')}",
                 "",
                 f"模型判断：{check['model_answer'] or '未提供'}",
                 "",
-                f"风险等级：{check['risk_level']}，置信度：{check['confidence']:.2f}",
+                f"判断状态：{check['verdict']}",
+                "",
+                f"风险等级：{check['risk_level']}",
+                "",
+                f"置信度：{check['confidence']:.2f}",
                 "",
                 f"理由：{check['reason'] or '未提供'}",
                 "",
@@ -827,7 +880,13 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
     (output_dir / f"{title}.md").write_text(
         render_markdown(enriched, title), encoding="utf-8"
     )
-    write_docx(enriched, title, output_dir / f"{title}.docx")
+    try:
+        write_docx(enriched, title, output_dir / f"{title}.docx")
+    except PermissionError as exc:
+        raise RuntimeError(
+            f"无法写入 Word 文件：{output_dir / f'{title}.docx'}。"
+            "请确认该文件没有被 Word、WPS 或预览窗口打开后重试。"
+        ) from exc
     print_run_summary(build_run_summary(enriched), output_dir, title)
     return enriched
 

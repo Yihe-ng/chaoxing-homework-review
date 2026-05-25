@@ -5,6 +5,11 @@ into review documents. It merges questions, cleans formatting, deduplicates
 items, generates missing explanations with a DeepSeek-compatible API, and
 exports DOCX, Markdown, and enriched JSON.
 
+## TODO
+
+- Add a manual ordering file for courses whose exports do not include chapter
+  numbers, or whose names only contain topic titles.
+
 This project intentionally does not automate Chaoxing login, submission, or
 access bypass. Export the JSON files yourself from pages you are allowed to
 access, then run this tool locally.
