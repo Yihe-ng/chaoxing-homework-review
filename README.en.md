@@ -58,14 +58,13 @@ AI_BASE_URL=https://api.deepseek.com
 AI_MODEL=deepseek-v4-flash
 AI_MAX_TOKENS=2000
 DOCX_FONT=Microsoft YaHei
-
-CHAOXING_STATE_PATH=.local/chaoxing_state.json
-CHAOXING_OUTPUT_DIR=output
-CHAOXING_REVIEW_AFTER_COLLECT=true
 ```
 
 Set `AI_API_KEY` in `.env`. `DEEPSEEK_API_KEY` and `OPENAI_API_KEY` are also
 supported as fallbacks.
+
+`CHAOXING_*` variables have built-in defaults and are optional — see
+[Configuration Reference](#configuration-reference).
 
 ## Usage
 
