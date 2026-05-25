@@ -26,7 +26,7 @@ def parse_course_list(html: str) -> list[dict]:
         name = _course_name(anchor, container)
         if not name:
             continue
-        href = anchor.get("href", "")
+        href = str(anchor.get("href", ""))
         params = _query_params(href)
         course = {
             "name": name,
@@ -87,9 +87,10 @@ def parse_work_list(html: str) -> list[dict]:
     works: list[dict] = []
     for item in soup.select('li[data][onclick*="goTask"]'):
         text = clean_text(item.get_text(" "))
-        title = clean_text(item.select_one("p").get_text(" ") if item.select_one("p") else text)
+        p_elem = item.select_one("p")
+        title = clean_text(p_elem.get_text(" ") if p_elem else text)
         title = _clean_work_title(title)
-        detail_url = item.get("data", "")
+        detail_url = str(item.get("data", ""))
         params = _query_params(detail_url)
         works.append(
             {
@@ -223,6 +224,7 @@ def _strip_inline_question_tail(text: str) -> str:
     text = re.sub(r"\s+[A-Z]\s*[:：].*$", "", text)
     text = re.sub(r"\s+[A-Z]\s*[.．、]\s*$", "", text)
     text = re.sub(r"\s+\d+(?:\.\d+)?\s*分$", "", text)
+    text = re.sub(r"(\s+\d+(?:\.\d+)?\s*分)?(\s*\(\d+\)\s*\S+)+$", "", text)
     return text
 
 
