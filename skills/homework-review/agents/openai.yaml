@@ -1,0 +1,4 @@
+interface:
+  display_name: "Homework Review"
+  short_description: "Collect Chaoxing homework and build AI review docs."
+  default_prompt: "Use this skill to collect completed Chaoxing homework (uv run main.py) or process existing JSON exports into DOCX and Markdown review files with cached AI explanations."

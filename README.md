@@ -199,6 +199,21 @@ output/
 > DeepSeek aliases are also supported: `DEEPSEEK_API_KEY`,
 > `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`.
 
+## For AI Coding Assistants
+
+The `skills/homework-review/` directory contains LLM-oriented workflow
+instructions (Skill). Compatible with OpenCode, Claude Code, Cursor, Cline, and
+other AI coding tools. Agents read the skill to:
+
+1. Verify the environment is ready (`.env`, `uv sync`, Playwright browser)
+2. Run `uv run main.py` for interactive homework collection
+3. Run `uv run homework-review --dry-run` to validate before API calls
+4. Generate DOCX / Markdown review materials with AI explanations
+5. Run `uv run python -m unittest discover -s tests` to verify
+
+The skill enforces safety boundaries: no automated login, no access bypass, no
+API key submission.
+
 **Keywords**: Chaoxing, homework export, homework review, exam review, AI explanations, DeepSeek, DOCX, Markdown, study notes
 
 ## Development

@@ -56,19 +56,9 @@ When the user already has raw JSON files (from `main.py` or manual export):
    ```
 
 3. Confirm the dry-run created `.docx`, `.md`, and `questions.enriched.json`.
-4. If the user wants AI explanations, check environment variables:
-
-   ```powershell
-   $env:AI_API_KEY
-   $env:AI_BASE_URL
-   $env:AI_MODEL
-   ```
-
-   `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_MODEL` are accepted
-   as fallback aliases. `OPENAI_API_KEY` is also supported.
-
-   A local `.env` file is supported. Rename `.env.example` to `.env` and edit
-   it. Never print or commit the user's real API key.
+4. If the user wants AI explanations, check that `.env` has `AI_API_KEY` set.
+   Run `uv run homework-review` without `--dry-run` only after confirming the
+   key and dry-run output look correct.
 
 5. Run the paid/API generation only after dry-run succeeds:
 
