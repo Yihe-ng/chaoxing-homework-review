@@ -52,6 +52,7 @@ def normalize_question(raw: dict, meta: dict | None = None, source_file: str = "
     meta = meta or {}
     question = dict(raw)
     question["courseName"] = question.get("courseName") or meta.get("courseName", "")
+    question["homeworkTitle"] = meta.get("homeworkTitle", "")
     if source_file:
         question["sourceFile"] = source_file
     question["question"] = normalize_question_text(question.get("question", ""))
@@ -164,9 +165,7 @@ def log_progress(
     title = re.sub(r"\s+", " ", question or "").strip()
     if len(title) > 48:
         title = title[:45] + "..."
-    logger(f"[{index}/{total}] {stage}：{title}", flush=True) if logger is print else logger(
-        f"[{index}/{total}] {stage}：{title}"
-    )
+    logger(f"[{index}/{total}] {stage}：{title}")
 
 
 def load_cache(cache_path: Path | None) -> dict[str, dict]:
@@ -197,6 +196,19 @@ def is_valid_font_name(font_name: str) -> bool:
     if not font_name or len(font_name) > 80:
         return False
     return bool(re.fullmatch(r"[\w\s\-\u4e00-\u9fff]+", font_name, re.UNICODE))
+
+
+def _http_error_message(code: int) -> str:
+    messages = {
+        400: "HTTP 400 请求格式有误，请联系开发者",
+        401: "HTTP 401 API 密钥无效，请检查 .env 中的 AI_API_KEY",
+        402: "HTTP 402 账户余额不足，请检查平台账户余额",
+        422: "HTTP 422 参数有误（如模型名称错误），请检查 .env 中的 AI_MODEL",
+        429: "HTTP 429 请求太频繁，请稍后重试",
+        500: "HTTP 500 服务器内部错误，请稍后重试",
+        503: "HTTP 503 服务器繁忙，请稍后重试",
+    }
+    return messages.get(code, f"HTTP {code} 请求异常，请稍后重试")
 
 
 def load_dotenv(path: Path | str = ".env") -> None:
@@ -299,12 +311,13 @@ def call_chat_completion(messages: list[dict]) -> str:
                 raise RuntimeError("API returned empty JSON content.")
             return content
         except urllib.error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
             if exc.code < 500 or attempt == 2:
-                raise RuntimeError(f"API request failed: HTTP {exc.code} {details}") from exc
+                raise RuntimeError(
+                    f"API 请求失败: {_http_error_message(exc.code)}"
+                ) from exc
         except urllib.error.URLError as exc:
             if attempt == 2:
-                raise RuntimeError(f"API request failed: {exc}") from exc
+                raise RuntimeError(f"API 请求失败: 网络连接错误 ({exc})") from exc
         time.sleep(2**attempt)
 
     raise RuntimeError("API request failed after retries.")
@@ -425,37 +438,44 @@ def enrich_questions(
     verify_answers: bool = False,
     cache_writer: Callable[[dict[str, dict], list[dict]], None] | None = None,
     logger: Callable[[str], None] = print,
+    on_consecutive_failures: Callable[[int, list[dict]], bool] | None = None,
 ) -> list[dict]:
     cache = cache or {}
     enriched: list[dict] = []
     question_list = list(questions)
     total = len(question_list)
+    consecutive_failures = 0
+    failed_batch: list[dict] = []
     for index, question in enumerate(question_list, 1):
         item = dict(question)
         key = question_key(item)
         cached = cache.get(key)
-        if cached and cached.get("explanation"):
+        if cached and cached.get("explanation") and cached.get("explanation_source") != "failed":
             log_progress("使用缓存", index, total, item.get("question", ""), logger)
             item["explanation"] = normalize_explanation(cached["explanation"])
             item["cached_explanation_source"] = cached.get("explanation_source", "unknown")
             item["explanation_source"] = "cache"
             if cached.get("answer_check"):
                 item["answer_check"] = normalize_answer_check(cached["answer_check"])
+            consecutive_failures = 0
         elif item.get("explanation"):
             log_progress("使用原解析", index, total, item.get("question", ""), logger)
             item["explanation"] = normalize_explanation(item["explanation"])
             item["explanation_source"] = item.get("explanation_source", "platform")
+            consecutive_failures = 0
         elif dry_run:
             log_progress("dry-run 占位", index, total, item.get("question", ""), logger)
             item["explanation"] = normalize_explanation(
                 {"correct_reason": "待生成：dry-run 模式未调用 AI API。"}
             )
             item["explanation_source"] = "missing"
+            consecutive_failures = 0
         else:
             log_progress("生成解析", index, total, item.get("question", ""), logger)
             try:
                 item["explanation"] = parse_explanation_response(client(build_prompt(item)))
                 item["explanation_source"] = "ai"
+                consecutive_failures = 0
             except Exception as exc:
                 item["explanation"] = normalize_explanation(
                     {
@@ -467,7 +487,13 @@ def enrich_questions(
                 )
                 item["explanation_source"] = "failed"
                 item["processing_error"] = str(exc)
+                consecutive_failures += 1
+                failed_batch.append(item)
                 log_progress("解析失败", index, total, item.get("question", ""), logger)
+                if on_consecutive_failures and consecutive_failures >= 10:
+                    if not on_consecutive_failures(consecutive_failures, list(failed_batch)):
+                        logger("已停止解析，已成功部分可通过缓存复用。")
+                        break
         if verify_answers and not item.get("answer_check") and item.get("explanation_source") != "failed":
             log_progress("答案校验", index, total, item.get("question", ""), logger)
             try:
@@ -500,7 +526,7 @@ def enrich_questions(
 def update_cache(cache: dict[str, dict], questions: Iterable[dict]) -> dict[str, dict]:
     updated = dict(cache)
     for question in questions:
-        if question.get("explanation") and question.get("explanation_source") != "missing":
+        if question.get("explanation") and question.get("explanation_source") not in ("missing", "failed"):
             cached_question = {
                 "explanation": normalize_explanation(question["explanation"]),
                 "explanation_source": question.get("explanation_source", "ai"),
@@ -532,16 +558,31 @@ def build_run_summary(questions: list[dict]) -> dict[str, int]:
     return summary
 
 
-def print_run_summary(summary: dict[str, int], output_dir: Path, title: str) -> None:
+def print_run_summary(summary: dict[str, int], output_dir: Path, title: str, *, docx_failed: bool = False) -> None:
     print("处理汇总：", flush=True)
     print(f"- 总题数：{summary['total']}", flush=True)
     print(f"- 使用缓存：{summary['cache']}", flush=True)
     print(f"- 新生成解析：{summary['ai']}", flush=True)
     print(f"- 处理失败：{summary['failed']}", flush=True)
     print(f"- 需复核：{summary['review_needed']}", flush=True)
-    print(f"- Word：{output_dir / f'{title}.docx'}", flush=True)
+    if docx_failed:
+        print(f"- Word：⚠ 写入失败（文件被占用）", flush=True)
+    else:
+        print(f"- Word：{output_dir / f'{title}.docx'}", flush=True)
     print(f"- Markdown：{output_dir / f'{title}.md'}", flush=True)
     print(f"- 复核清单：{output_dir / 'review-needed.md'}", flush=True)
+    if summary.get("failed", 0) > 0:
+        print(
+            f"> {summary['failed']} 题未生成解析（已成功的 {summary['total'] - summary['failed']} 题不受影响）。"
+            "排查问题后重新运行相同命令即可自动补全，已成功题目会跳过，不会重复调用 API。",
+            flush=True,
+        )
+    if docx_failed:
+        print()
+        print("═" * 48, flush=True)
+        print("⚠  Word 文件未能写入，请关闭 Word / WPS 中打开的该文件后重新运行。", flush=True)
+        print("   Markdown 和 JSON 已正常保存。", flush=True)
+        print("═" * 48, flush=True)
 
 
 def render_markdown(questions: list[dict], title: str) -> str:
@@ -722,13 +763,19 @@ def write_docx(questions: list[dict], title: str, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document = Document()
     configure_document_styles(document)
-    document.add_heading(title, level=0)
+    _add_heading(document, title, 0)
     current_course = None
+    current_chapter = None
     for index, question in enumerate(questions, 1):
         course = question.get("courseName") or "未命名课程"
+        chapter = question.get("homeworkTitle", "")
         if course != current_course:
-            document.add_heading(course, level=1)
+            _add_heading(document, course, 1)
             current_course = course
+            current_chapter = None
+        if chapter and chapter != current_chapter:
+            _add_heading(document, chapter, 2)
+            current_chapter = chapter
         question_paragraph = document.add_paragraph()
         question_run = question_paragraph.add_run(f"{index}. {question.get('question', '')}")
         question_run.bold = True
@@ -751,7 +798,7 @@ def write_docx(questions: list[dict], title: str, output_path: Path) -> None:
         add_explanation_docx(document, question.get("explanation"))
         document.add_paragraph(f"解析来源：{_source_label(question.get('explanation_source', 'unknown'))}")
         add_separator(document)
-    document.save(output_path)
+    document.save(str(output_path))
 
 
 def configure_document_styles(document) -> None:
@@ -765,6 +812,29 @@ def configure_document_styles(document) -> None:
     normal.font.size = Pt(10.5)
     normal.paragraph_format.space_after = Pt(8)
     normal.paragraph_format.line_spacing = 1.15
+    for style_name in ("Title", "Heading 1", "Heading 2"):
+        try:
+            style = document.styles[style_name]
+            style.font.name = font_name
+            style._element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
+        except KeyError:
+            pass
+
+
+def _add_heading(document, text: str, level: int):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    heading = document.add_heading(text, level=level)
+    for run in heading.runs:
+        run.font.name = docx_font_name()
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), docx_font_name())
+    pPr = heading._p.get_or_add_pPr()
+    outline = OxmlElement("w:outlineLvl")
+    outline.set(qn("w:val"), str(level - 1) if level > 0 else "0")
+    pPr.append(outline)
+    return heading
 
 
 def add_answer_check_docx(document, answer_check: object) -> None:
@@ -879,12 +949,17 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
         save_json(cache_path, progress_cache)
         save_json(output_dir / "questions.partial.json", processed)
 
+    def on_consecutive_failures(count, failed):
+        answer = input(f"连续 {count} 题解析失败。已保存进度，是否继续？ [Y/n](y) ").strip().lower()
+        return not answer or answer in {"y", "yes", "是"}
+
     enriched = enrich_questions(
         questions,
         cache=cache,
         dry_run=args.dry_run,
         verify_answers=args.verify_answers and not args.dry_run,
         cache_writer=write_progress_cache,
+        on_consecutive_failures=on_consecutive_failures,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -897,14 +972,12 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
     (output_dir / f"{title}.md").write_text(
         render_markdown(enriched, title), encoding="utf-8"
     )
+    docx_failed = False
     try:
         write_docx(enriched, title, output_dir / f"{title}.docx")
-    except PermissionError as exc:
-        raise RuntimeError(
-            f"无法写入 Word 文件：{output_dir / f'{title}.docx'}。"
-            "请确认该文件没有被 Word、WPS 或预览窗口打开后重试。"
-        ) from exc
-    print_run_summary(build_run_summary(enriched), output_dir, title)
+    except PermissionError:
+        docx_failed = True
+    print_run_summary(build_run_summary(enriched), output_dir, title, docx_failed=docx_failed)
     return enriched
 
 

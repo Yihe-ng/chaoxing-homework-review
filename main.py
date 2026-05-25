@@ -124,7 +124,7 @@ def multi_select(message: str, choices: list[dict], labeler, *, default_all: boo
     if not choices:
         return []
     try:
-        from InquirerPy import inquirer
+        from InquirerPy import inquirer  # pyright: ignore[reportMissingImports]
 
         selected = inquirer.checkbox(
             message=message,
@@ -172,11 +172,15 @@ def run_review_for_course(output_root: Path, course_name: str, *, verify_answers
         homework_review.save_json(cache_path, updated_cache)
         homework_review.save_json(review_dir / "questions.partial.json", processed)
 
+    def on_consecutive_failures(count, failed):
+        return confirm(f"连续 {count} 题解析失败。已保存进度，是否继续？", default=True)
+
     enriched = homework_review.enrich_questions(
         questions,
         cache=cache,
         verify_answers=verify_answers,
         cache_writer=cache_writer,
+        on_consecutive_failures=on_consecutive_failures,
     )
     cache = homework_review.update_cache(cache, enriched)
     homework_review.save_json(cache_path, cache)
@@ -188,9 +192,13 @@ def run_review_for_course(output_root: Path, course_name: str, *, verify_answers
     (review_dir / f"{title}.md").write_text(
         homework_review.render_markdown(enriched, title), encoding="utf-8"
     )
-    homework_review.write_docx(enriched, title, review_dir / f"{title}.docx")
+    docx_failed = False
+    try:
+        homework_review.write_docx(enriched, title, review_dir / f"{title}.docx")
+    except PermissionError:
+        docx_failed = True
     homework_review.print_run_summary(
-        homework_review.build_run_summary(enriched), review_dir, title
+        homework_review.build_run_summary(enriched), review_dir, title, docx_failed=docx_failed
     )
 
 
