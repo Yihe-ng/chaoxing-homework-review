@@ -7,7 +7,9 @@ __pycache__/
 .env
 .env.*
 !.env.example
+.local/
 output/
+debug-html/
 *.cache.json
 questions.enriched.json
 *.docx
@@ -15,3 +17,4 @@ questions.enriched.json
 !README.md
 !docs/**/*.md
 !skills/**/*.md
+!README.zh-CN.md

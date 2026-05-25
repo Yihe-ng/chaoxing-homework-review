@@ -5,7 +5,12 @@ description = "Generate review documents from Chaoxing homework JSON exports."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "inquirerpy>=0.3.4",
+    "lxml>=6.1.1",
+    "playwright>=1.60.0",
     "python-docx>=1.1.2",
+    "requests>=2.34.2",
 ]
 
 [project.scripts]

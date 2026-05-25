@@ -27,7 +27,12 @@ LINE_COLOR = "000000"
 
 def normalize_question_text(text: str) -> str:
     text = re.sub(r"^\s*\d+[.．、]\s*", "", text or "")
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.split(r"\s+[A-Z]\s*[.．、]\s*\S+", text, maxsplit=1)[0]
+    text = re.sub(r"\s+[A-Z]\s*[:：].*$", "", text)
+    text = re.sub(r"\s+[A-Z]\s*[.．、]\s*$", "", text)
+    text = re.sub(r"\s+\d+(?:\.\d+)?\s*分$", "", text)
+    return text.strip()
 
 
 def normalize_option(option: str) -> str:
@@ -138,20 +143,9 @@ def is_source_json_file(file_path: Path) -> bool:
         "questions.partial.json",
         "explanations.cache.json",
     }
-    generated_dirs = {
-        "output",
-        "final-output",
-        "progress-test-output",
-        "layout-test-output",
-        "verify-test-output",
-        "review-card-test-output",
-        "student-review-test-output",
-        "json-mode-test-output",
-        "api-test-output",
-    }
     if file_path.name in generated_names:
         return False
-    return not any(part in generated_dirs for part in file_path.parts)
+    return True
 
 
 def apply_limit(questions: list[dict], limit: int | None) -> list[dict]:
@@ -574,10 +568,12 @@ def render_markdown(questions: list[dict], title: str) -> str:
         source = question.get("explanation_source", "unknown")
         explanation_lines = render_explanation_markdown(question.get("explanation"))
         answer_check_lines = render_answer_check_markdown(question.get("answer_check"))
+        answer_source_lines = render_answer_source_markdown(question)
         lines.extend(
             [
                 "**解析**",
                 "",
+                *answer_source_lines,
                 *answer_check_lines,
                 *explanation_lines,
                 f"解析来源：{_source_label(source)}",
@@ -598,6 +594,17 @@ def render_answer_check_markdown(answer_check: object) -> list[str]:
     return [
         "**答案可能需要复核**",
         "这道题的导出答案与模型校验结果存在差异或不确定，详见 review-needed.md。",
+        "",
+    ]
+
+
+def render_answer_source_markdown(question: dict) -> list[str]:
+    visibility = question.get("answer_visibility", "correct_answer_visible")
+    if visibility == "correct_answer_visible":
+        return []
+    return [
+        "**答案来源需要留意**",
+        "这道题未在页面中读取到标准正确答案，当前答案可能来自我的答案或为空，详见 review-needed.md。",
         "",
     ]
 
@@ -632,12 +639,12 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
     flagged = [
         question
         for question in questions
-        if question.get("answer_check")
-        and normalize_answer_check(question["answer_check"])["needs_review"]
+        if _needs_review(question)
     ]
     lines = [f"# {title}", "", f"需复核题目数：{len(flagged)}", ""]
     for index, question in enumerate(flagged, 1):
-        check = normalize_answer_check(question["answer_check"])
+        check = normalize_answer_check(question.get("answer_check", {}))
+        answer_visibility = question.get("answer_visibility", "correct_answer_visible")
         lines.extend(
             [
                 f"## {index}. {question.get('question', '')}",
@@ -656,6 +663,8 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
             [
                 f"导出答案：{check['provided_answer'] or question.get('answer', '')}",
                 "",
+                f"答案来源：{answer_visibility}",
+                "",
                 f"模型判断：{check['model_answer'] or '未提供'}",
                 "",
                 f"判断状态：{check['verdict']}",
@@ -669,6 +678,14 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
             ]
         )
     return "\n".join(lines).strip() + "\n"
+
+
+def _needs_review(question: dict) -> bool:
+    if question.get("answer_visibility", "correct_answer_visible") != "correct_answer_visible":
+        return True
+    if question.get("answer_check"):
+        return normalize_answer_check(question["answer_check"])["needs_review"]
+    return False
 
 
 def format_option_markdown(option: str, answer: str) -> str:
