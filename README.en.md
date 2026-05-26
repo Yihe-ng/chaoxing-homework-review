@@ -66,11 +66,13 @@ supported as fallbacks.
 `CHAOXING_*` variables have built-in defaults and are optional — see
 [Configuration Reference](#configuration-reference).
 
-**Let an AI agent set it up:** Paste the following into Claude Code, Cursor, Cline,
-or any AI coding tool. The agent will detect your environment first, show a report,
-and ask for confirmation before making any changes:
+**Let an AI agent set it up:** Copy and paste the following into Claude Code, Cursor,
+Cline, or any AI coding tool. The agent will detect your environment first, show a
+report, and ask for confirmation before making any changes:
 
-> Follow https://raw.githubusercontent.com/Yihe-ng/chaoxing-homework-review/main/skills/homework-review/SKILL.md to install and configure this project.
+```text
+Follow https://raw.githubusercontent.com/Yihe-ng/chaoxing-homework-review/main/skills/homework-review/SKILL.md to install and configure this project.
+```
 
 ## Usage
 

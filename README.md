@@ -55,9 +55,11 @@ DOCX_FONT=Microsoft YaHei
 
 `CHAOXING_*` 等采集相关变量都有内置默认值，无需在 `.env` 中设置，详见[配置参考](#配置参考)。
 
-**交给 AI 助手配置：** 将以下提示词粘贴给 Claude Code、Cursor、Cline 等 AI 编程工具，Agent 会先检测当前环境、汇总报告，等你确认后再执行安装：
+**交给 AI 助手配置：** 将以下内容复制粘贴给 Claude Code、Cursor、Cline 等 AI 编程工具，Agent 会先检测当前环境、汇总报告，等你确认后再执行安装：
 
-> 按照 https://raw.githubusercontent.com/Yihe-ng/chaoxing-homework-review/main/skills/homework-review/SKILL.md 中的说明，帮我安装并配置这个项目。
+```text
+按照 https://raw.githubusercontent.com/Yihe-ng/chaoxing-homework-review/main/skills/homework-review/SKILL.md 中的说明，帮我安装并配置这个项目。
+```
 
 ## 使用方法
 
