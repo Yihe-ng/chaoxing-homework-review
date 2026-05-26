@@ -199,3 +199,7 @@ uv run python -m unittest discover -s tests
 # 安装 Playwright 浏览器（仅无 Edge/Chrome 时需要）
 uv run playwright install chromium
 ```
+
+## 许可证
+
+[MIT](./LICENSE)

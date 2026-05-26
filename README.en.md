@@ -223,3 +223,7 @@ uv run python -m unittest discover -s tests
 # Install Playwright browser (only needed without Edge/Chrome)
 uv run playwright install chromium
 ```
+
+## License
+
+[MIT](./LICENSE)
