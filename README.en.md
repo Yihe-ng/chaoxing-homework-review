@@ -66,6 +66,12 @@ supported as fallbacks.
 `CHAOXING_*` variables have built-in defaults and are optional — see
 [Configuration Reference](#configuration-reference).
 
+**Let an AI agent set it up:** Paste the following into Claude Code, Cursor, Cline,
+or any AI coding tool. The agent will detect your environment first, show a report,
+and ask for confirmation before making any changes:
+
+> Follow https://raw.githubusercontent.com/Yihe-ng/chaoxing-homework-review/main/skills/homework-review/SKILL.md to install and configure this project.
+
 ## Usage
 
 ### Interactive Collection (primary)
@@ -200,18 +206,9 @@ output/
 
 ## For AI Coding Assistants
 
-The `skills/homework-review/` directory contains LLM-oriented workflow
-instructions (Skill). Compatible with OpenCode, Claude Code, Cursor, Cline, and
-other AI coding tools. Agents read the skill to:
-
-1. Verify the environment is ready (`.env`, `uv sync`, Playwright browser)
-2. Run `uv run main.py` for interactive homework collection
-3. Run `uv run homework-review --dry-run` to validate before API calls
-4. Generate DOCX / Markdown review materials with AI explanations
-5. Run `uv run python -m unittest discover -s tests` to verify
-
-The skill enforces safety boundaries: no automated login, no access bypass, no
-API key submission.
+The `skills/homework-review/` directory contains LLM workflow instructions for
+OpenCode, Claude Code, Cursor, Cline, and similar tools. The skill enforces
+safety boundaries: no automated login, no access bypass, no API key submission.
 
 **Keywords**: Chaoxing, homework export, homework review, exam review, AI explanations, DeepSeek, DOCX, Markdown, study notes
 

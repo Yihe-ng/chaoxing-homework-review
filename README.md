@@ -55,6 +55,10 @@ DOCX_FONT=Microsoft YaHei
 
 `CHAOXING_*` 等采集相关变量都有内置默认值，无需在 `.env` 中设置，详见[配置参考](#配置参考)。
 
+**交给 AI 助手配置：** 将以下提示词粘贴给 Claude Code、Cursor、Cline 等 AI 编程工具，Agent 会先检测当前环境、汇总报告，等你确认后再执行安装：
+
+> 按照 https://raw.githubusercontent.com/Yihe-ng/chaoxing-homework-review/main/skills/homework-review/SKILL.md 中的说明，帮我安装并配置这个项目。
+
 ## 使用方法
 
 ### 交互式采集（主要方式）
@@ -180,17 +184,7 @@ output/
 
 ## 供 AI 编程助手使用
 
-项目包含 `skills/homework-review/` 目录，内含面向 LLM 的工作流说明（Skill）。
-支持 OpenCode、Claude Code、Cursor、Cline 等 AI 编程工具的 Agent 自动读取并
-执行以下操作：
-
-1. 检查环境配置（`.env`、`uv sync`、Playwright 浏览器）
-2. 运行 `uv run main.py` 完成交互式采集
-3. 执行 `uv run homework-review --dry-run` 验证输入
-4. 调用 API 生成解析并输出 DOCX / Markdown 复习资料
-5. 运行测试验证 `uv run python -m unittest discover -s tests`
-
-Skill 中明确了安全边界：不自动登录、不绕过访问限制、不提交 API 密钥。
+`skills/homework-review/` 目录包含面向 LLM 的工作流说明，供 OpenCode、Claude Code、Cursor、Cline 等工具自动调用。Skill 明确了安全边界：不自动登录、不绕过访问限制、不提交 API 密钥。
 
 **关键词**：学习通 超星 作业导出 作业解析 复习资料 AI 复习 考试复习 DeepSeek DOCX Markdown
 

@@ -23,6 +23,65 @@ Interactive course → homework select    DeepSeek API explanations
 Export raw JSON                        DOCX + Markdown + checklist
 ```
 
+## Setup (for LLM Agents)
+
+When setting up this project for the first time, do NOT install or modify
+anything until the user confirms the plan.
+
+### Phase 1 — Detect (silent, no changes)
+
+Run these checks silently and compile a report:
+
+| Check | How | What to note |
+|-------|-----|--------------|
+| Python | `python --version` | Installed: version → ok if ≥ 3.11; Missing or too old → need install |
+| uv | `uv --version` | Installed or missing |
+| git | `git --version` | Installed or missing |
+| Repo already cloned | `Test-Path chaoxing-homework-review` (or `ls`) | Already exists or needs clone |
+| .env configured | `Test-Path chaoxing-homework-review/.env` | Exists with non-placeholder `AI_API_KEY` or needs setup |
+| Playwright browser | Check OS: Windows → has Edge (skip); other → needs `playwright install chromium` |
+
+### Phase 2 — Report & Ask
+
+Present the findings to the user as a checklist, marking each item ✅ (ready),
+⚠️ (needs action), or ❌ (blocker). Then ask:
+
+> 我将按以上计划操作，是否继续？
+> Choose: "继续" / "跳过某步" / "我自己来"
+
+Do NOT proceed until the user confirms.
+
+### Phase 3 — Execute
+
+Only after user confirmation, run the needed steps:
+
+1. **Python** (if ❌): Tell the user to install Python 3.11+ from
+   https://www.python.org/downloads/ and retry. Do NOT install Python yourself.
+
+2. **uv** (if ⚠️): Follow https://uv.doczh.com/getting-started/installation/
+   for the user's platform. Use the official install command.
+
+3. **git clone** (if ⚠️):
+   ```powershell
+   git clone https://github.com/Yihe-ng/chaoxing-homework-review.git
+   cd chaoxing-homework-review
+   ```
+
+4. **uv sync** (if ⚠️): Creates `.venv` and installs all dependencies.
+
+5. **Playwright browser** (if ⚠️): `uv run playwright install chromium`.
+   Skip on Windows (Edge is preinstalled and preferred).
+
+6. **.env** (if ⚠️): Copy `.env.example` to `.env`, then ask the user to edit
+   it and fill in `AI_API_KEY`. Tell them to register at
+   https://platform.deepseek.com/api_keys (free tier available).
+   **Never read or print the key value.** If `.env` already has a valid-looking
+   key, skip this step.
+
+7. **Verify** (always): `uv run python -m unittest discover -s tests`
+   All 47 tests must pass. If any fail, report which tests failed and stop —
+   do not proceed to collection or review.
+
 ## Workflow
 
 ### Primary: Interactive Collection
