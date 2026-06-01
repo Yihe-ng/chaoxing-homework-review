@@ -135,6 +135,8 @@ def parse_work_detail(
 
 
 def _parse_question_block(block, index: int) -> dict:
+    # TODO: Capture rich media in question blocks, including stem images,
+    # option images, formula images, and attachment links.
     question_id = block.get("id") or block.get("data") or ""
     q_type = _question_type(block)
     options = _options(block)
@@ -158,6 +160,8 @@ def _parse_question_block(block, index: int) -> dict:
         "correct_answer": correct_answer,
         "answer": answer,
         "score": _score(block),
+        # TODO: Parse platform-provided explanations when Chaoxing exposes
+        # them. Current fixtures do not include homework with existing analysis.
         "analysis": "",
         "answer_visibility": answer_visibility,
         "raw_preview": clean_text(block.get_text(" "))[:500],
@@ -167,6 +171,8 @@ def _parse_question_block(block, index: int) -> dict:
 def _question_type(block) -> str:
     text = clean_text(_first_text(block, ".colorShallow"))
     if not text:
+        # TODO: Add layout samples for short-answer, essay, material,
+        # matching, and other non-choice Chaoxing question types.
         match = re.search(r"[（(](单选题|多选题|判断题|填空题)[）)]", block.get_text(" "))
         text = match.group(1) if match else ""
     return text.strip("()（） ")

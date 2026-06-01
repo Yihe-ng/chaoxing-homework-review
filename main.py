@@ -13,6 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Collect Chaoxing homework and generate review docs.")
     parser.add_argument("--output-dir", default=None, help="Output directory. Defaults to CHAOXING_OUTPUT_DIR or output.")
     parser.add_argument("--no-review", action="store_true", help="Collect JSON only, without running homework-review.")
+    parser.add_argument("--review-all", action="store_true", help="When reviewing after collection, use all JSON files in the course raw directory.")
     parser.add_argument("--verify-answers", action="store_true", help="Enable answer verification during review.")
     parser.add_argument("--course", action="append", help="Course keyword. Can be repeated. Skips the course search prompt.")
     parser.add_argument("--yes", action="store_true", help="Use defaults for prompts when possible.")
@@ -58,6 +59,10 @@ def main() -> None:
         if written:
             collected_by_course[course_name] = written
             print(f"已导出 {len(written)} 个 JSON 到：{raw_dir}", flush=True)
+            if args.review_all:
+                print("本次生成范围：课程 raw 目录全部作业（包含历史采集文件）。", flush=True)
+            else:
+                print(f"本次生成范围：仅本轮选中的 {len(written)} 个作业。", flush=True)
 
     if not collected_by_course:
         print("没有成功采集到作业。", flush=True)
@@ -67,8 +72,14 @@ def main() -> None:
     review_default = os.getenv("CHAOXING_REVIEW_AFTER_COLLECT", "true").lower() in {"1", "true", "yes"}
     if not args.yes and not confirm("是否立即生成复习资料？", default=review_default):
         return
-    for course_name in collected_by_course:
-        run_review_for_course(output_root, course_name, verify_answers=args.verify_answers)
+    for course_name, written in collected_by_course.items():
+        run_review_for_course(
+            output_root,
+            course_name,
+            input_paths=written,
+            review_all=args.review_all,
+            verify_answers=args.verify_answers,
+        )
 
 
 def choose_courses(courses: list[dict], keywords: list[str] | None, *, assume_yes: bool = False) -> list[dict]:
@@ -157,13 +168,25 @@ def confirm(message: str, *, default: bool = True) -> bool:
     return answer in {"y", "yes", "是"}
 
 
-def run_review_for_course(output_root: Path, course_name: str, *, verify_answers: bool) -> None:
+def run_review_for_course(
+    output_root: Path,
+    course_name: str,
+    *,
+    input_paths: list[Path] | None = None,
+    review_all: bool = False,
+    verify_answers: bool,
+) -> None:
     safe_course = chaoxing_collect.safe_filename(course_name)
     raw_dir = output_root / safe_course / "raw"
     review_dir = output_root / safe_course / "review"
     title = f"{course_name}-完整复习资料"
     print(f"生成复习资料：{course_name}", flush=True)
-    questions = homework_review.load_questions(raw_dir)
+    input_source = raw_dir if review_all else list(input_paths or [])
+    if review_all:
+        print("生成范围：课程 raw 目录全部作业（包含历史采集文件）。", flush=True)
+    else:
+        print(f"生成范围：仅本轮选中的 {len(input_source)} 个作业。", flush=True)
+    questions = homework_review.load_questions(input_source)
     cache_path = review_dir / "explanations.cache.json"
     review_dir.mkdir(parents=True, exist_ok=True)
     cache = homework_review.load_cache(cache_path)

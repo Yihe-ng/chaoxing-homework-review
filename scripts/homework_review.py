@@ -51,6 +51,8 @@ def normalize_answer(answer: object) -> str:
 def normalize_question(raw: dict, meta: dict | None = None, source_file: str = "") -> dict:
     meta = meta or {}
     question = dict(raw)
+    # TODO: When real Chaoxing samples with platform explanations are available,
+    # map analysis/platform_analysis into explanation so review can reuse it.
     question["courseName"] = question.get("courseName") or meta.get("courseName", "")
     question["homeworkTitle"] = meta.get("homeworkTitle", "")
     if source_file:
@@ -74,9 +76,12 @@ def question_key(question: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def load_questions(input_path: Path | str) -> list[dict]:
-    root = Path(input_path)
-    files = sorted(root.rglob("*.json")) if root.is_dir() else [root]
+def load_questions(input_path: Path | str | Iterable[Path | str]) -> list[dict]:
+    if isinstance(input_path, (str, Path)):
+        root = Path(input_path)
+        files = sorted(root.rglob("*.json")) if root.is_dir() else [root]
+    else:
+        files = [Path(item) for item in input_path]
     files = [file_path for file_path in files if is_source_json_file(file_path)]
     files = sorted(files, key=source_file_sort_key)
     questions: list[dict] = []
@@ -227,6 +232,8 @@ def load_dotenv(path: Path | str = ".env") -> None:
 
 
 def build_prompt(question: dict) -> list[dict]:
+    # TODO: Extend the prompt contract for rich-media questions once the
+    # collector preserves image URLs, formulas, and attachment metadata.
     options = "\n".join(question.get("options", [])) or "无"
     user = f"""题型：{question.get("type", "")}
 题目：{question.get("question", "")}

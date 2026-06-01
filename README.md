@@ -77,7 +77,10 @@ uv run main.py
 2. **选课** — 输入课程关键词过滤（如 `计组`），勾选需要采集的课程。
 3. **选作业** — 默认勾选所有"已完成"作业，确认即可。
 4. **采集** — 工具自动爬取每份作业的题目、选项、答案和得分，保存为 JSON。
-5. **生成复习资料** — 采集完成后会询问是否立即生成复习资料。确认后调用 DeepSeek API 为每道题生成解析，最终输出 Word 和 Markdown 文档。
+5. **生成复习资料** — 采集完成后会询问是否立即生成复习资料。
+   默认只处理本轮选择并成功采集的作业，不会自动把 `raw/` 中历史
+   采集的其他章节混入。确认后调用 DeepSeek API 为每道题生成解析，
+   最终输出 Word 和 Markdown 文档。
 
 登录态会保存在 `.local/chaoxing_state.json`，下次运行无需重新登录。如果登录过期，重新运行 `uv run main.py` 并在浏览器中再次登录即可。
 
@@ -88,6 +91,7 @@ uv run main.py
 | `--course "计算机组成与结构"` | 跳过选课交互，直接匹配课程（可重复使用） |
 | `--yes` | 跳过所有交互确认，使用默认选项 |
 | `--no-review` | 只采集 JSON，不生成复习资料 |
+| `--review-all` | 生成复习资料时读取当前课程 `raw/` 下全部 JSON |
 | `--verify-answers` | 启用 AI 答案校验，标记可能出错的答案 |
 | `--output-dir "my-output"` | 指定输出目录（默认 `output`） |
 
@@ -99,6 +103,9 @@ uv run main.py --course "计算机组成与结构" --yes --verify-answers
 
 # 只采集不复习
 uv run main.py --course "人工智能基础" --no-review
+
+# 采集后对该课程 raw 目录下全部作业生成复习资料
+uv run main.py --course "人工智能基础" --review-all
 ```
 
 ### 从已有 JSON 生成复习资料
@@ -145,6 +152,11 @@ output/
       explanations.cache.json         # 解析缓存（下次运行复用，节省 API 费用）
       review-needed.md                # 需人工复核的题目清单
 ```
+
+`raw/` 会持续保存历史采集的 JSON。交互式采集后立即生成复习资料时，
+默认只使用本轮选中的作业文件；如果需要把 `raw/` 下全部历史作业一起
+生成，请使用 `--review-all`，或单独运行 `homework-review` 并把
+`raw/` 目录作为输入。
 
 **各文件说明：**
 

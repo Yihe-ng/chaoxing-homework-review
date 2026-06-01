@@ -105,6 +105,37 @@ class HomeworkReviewTests(unittest.TestCase):
             self.assertEqual(len(questions), 1)
             self.assertEqual(questions[0]["courseName"], "人工智能基础")
 
+    def test_load_questions_accepts_explicit_file_list_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            selected = root / "selected.json"
+            other = root / "other.json"
+            selected.write_text(
+                json.dumps(
+                    {
+                        "meta": {"courseName": "课程"},
+                        "questions": [{"type": "判断题", "question": "本轮题", "answer": "正确"}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            other.write_text(
+                json.dumps(
+                    {
+                        "meta": {"courseName": "课程"},
+                        "questions": [{"type": "判断题", "question": "历史题", "answer": "错误"}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            questions = homework_review.load_questions([selected])
+
+            self.assertEqual(len(questions), 1)
+            self.assertEqual(questions[0]["question"], "本轮题")
+
     def test_normalize_question_text_strips_inline_options_and_answers(self):
         text = (
             "机器人最基本的定义是（ ） A. 一种机械设备 B. 一种只能执行固定程序的机器 "
