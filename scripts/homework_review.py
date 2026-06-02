@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from io import BytesIO
 from pathlib import Path
 from typing import Callable, Iterable
 from xml.sax.saxutils import escape
@@ -19,6 +21,7 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_MAX_TOKENS = 2000
 DEFAULT_DOCX_FONT = "Microsoft YaHei"
+DEFAULT_API_USER_AGENT = "ChaoxingHomeworkReview/0.1 OpenAI-Compatible-Client"
 QUESTION_FONT_SIZE_PT = 13
 CALLOUT_FONT_SIZE_PT = 12
 TIP_SHADE = "FFF4D6"
@@ -62,6 +65,7 @@ def normalize_question(raw: dict, meta: dict | None = None, source_file: str = "
         normalize_option(option) for option in question.get("options", []) if option
     ]
     question["answer"] = normalize_answer(question.get("answer", ""))
+    question["images"] = normalize_images(question.get("images", []))
     return question
 
 
@@ -72,6 +76,9 @@ def question_key(question: dict) -> str:
         "options": [normalize_option(item) for item in question.get("options", [])],
         "answer": question.get("answer", ""),
     }
+    image_urls = [image["url"] for image in normalize_images(question.get("images", []))]
+    if image_urls:
+        payload["images"] = image_urls
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -231,17 +238,98 @@ def load_dotenv(path: Path | str = ".env") -> None:
             os.environ[key] = value
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def ai_vision_enabled() -> bool:
+    return env_flag("AI_VISION_ENABLED", False)
+
+
+def ai_vision_max_images() -> int:
+    try:
+        return max(0, int(os.getenv("AI_VISION_MAX_IMAGES", "4")))
+    except ValueError:
+        return 4
+
+
+def normalize_images(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    images = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, str):
+            image = {"url": item}
+        elif isinstance(item, dict):
+            image = dict(item)
+        else:
+            continue
+        url = str(image.get("url", "")).strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        images.append(
+            {
+                "url": url,
+                "data_url": str(image.get("data_url", "")).strip(),
+                "alt": str(image.get("alt", "")).strip(),
+                "title": str(image.get("title", "")).strip(),
+                **({"option": str(image.get("option", "")).strip()} if image.get("option") else {}),
+                **({"download_error": str(image.get("download_error", "")).strip()} if image.get("download_error") else {}),
+            }
+        )
+    return images
+
+
+def prompt_images(question: dict) -> list[dict]:
+    if not ai_vision_enabled():
+        return []
+    return normalize_images(question.get("images", []))[:ai_vision_max_images()]
+
+
+def build_user_content(text: str, images: list[dict]) -> str | list[dict]:
+    if not images:
+        return text
+    content: list[dict] = [{"type": "text", "text": text}]
+    for image in images:
+        content.append({"type": "image_url", "image_url": {"url": image_payload_url(image)}})
+    return content
+
+
+def image_payload_url(image: dict) -> str:
+    return image.get("data_url") or image["url"]
+
+
+def image_prompt_note(question: dict) -> str:
+    images = normalize_images(question.get("images", []))
+    if not images:
+        return ""
+    if not ai_vision_enabled():
+        return "\n题目图片：已采集到图片，但 AI_VISION_ENABLED 未开启，本次不会发送图片。"
+    limited = images[:ai_vision_max_images()]
+    lines = ["", f"题目图片：本次随请求发送 {len(limited)} 张图片。"]
+    for index, image in enumerate(limited, 1):
+        label = f"选项 {image['option']}" if image.get("option") else "题干"
+        alt = f"，说明：{image['alt']}" if image.get("alt") else ""
+        source = "，已内嵌图片数据" if image.get("data_url") else "，使用原始图片 URL"
+        lines.append(f"{index}. {label}{alt}{source}")
+    return "\n".join(lines)
+
+
 def build_prompt(question: dict) -> list[dict]:
-    # TODO: Extend the prompt contract for rich-media questions once the
-    # collector preserves image URLs, formulas, and attachment metadata.
     options = "\n".join(question.get("options", [])) or "无"
     user = f"""题型：{question.get("type", "")}
 题目：{question.get("question", "")}
 选项：
 {options}
-已知正确答案：{question.get("answer", "")}
+已知正确答案：{question.get("answer", "")}{image_prompt_note(question)}
 
 请生成适合复习背诵的中文解析，并严格输出 json。"""
+    images = prompt_images(question)
     return [
         {
             "role": "system",
@@ -260,9 +348,10 @@ def build_prompt(question: dict) -> list[dict]:
                 "knowledge_points 和 principles 各给 1 到 4 条，每条 50 到 110 字；"
                 "不要只写标签或名词短语，要展开说明为什么这个知识点与题目有关，"
                 "以及学生复习时应该记住的判断线索。"
+                "如果用户消息包含图片，请结合图片内容判断题干、选项、公式或图表。"
             ),
         },
-        {"role": "user", "content": user},
+        {"role": "user", "content": build_user_content(user, images)},
     ]
 
 
@@ -280,6 +369,15 @@ def api_settings_from_env() -> dict[str, str]:
         or os.getenv("DEEPSEEK_BASE_URL")
         or DEFAULT_BASE_URL,
         "model": os.getenv("AI_MODEL") or os.getenv("DEEPSEEK_MODEL") or DEFAULT_MODEL,
+    }
+
+
+def api_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": DEFAULT_API_USER_AGENT,
     }
 
 
@@ -302,10 +400,7 @@ def call_chat_completion(messages: list[dict]) -> str:
     request = urllib.request.Request(
         url,
         data=payload,
-        headers={
-            "Authorization": f"Bearer {settings['api_key']}",
-            "Content-Type": "application/json",
-        },
+        headers=api_headers(settings["api_key"]),
         method="POST",
     )
 
@@ -341,9 +436,10 @@ def build_answer_check_prompt(question: dict) -> list[dict]:
 题目：{question.get("question", "")}
 选项：
 {options}
-导出答案：{question.get("answer", "")}
+导出答案：{question.get("answer", "")}{image_prompt_note(question)}
 
 请独立校验导出答案是否合理，并严格输出 json。"""
+    images = prompt_images(question)
     return [
         {
             "role": "system",
@@ -359,9 +455,10 @@ def build_answer_check_prompt(question: dict) -> list[dict]:
                 '"needs_review":false}。'
                 "如果题目有歧义、多个选项可能成立、信息不足或你不确定，"
                 "verdict 用 uncertain，needs_review 用 true。"
+                "如果用户消息包含图片，请结合图片内容校验答案。"
             ),
         },
-        {"role": "user", "content": user},
+        {"role": "user", "content": build_user_content(user, images)},
     ]
 
 
@@ -613,6 +710,7 @@ def render_markdown(questions: list[dict], title: str) -> str:
             lines.append(f"- {format_option_markdown(option, question.get('answer', ''))}")
         if question.get("options"):
             lines.append("")
+        lines.extend(render_question_images_markdown(question))
         source = question.get("explanation_source", "unknown")
         explanation_lines = render_explanation_markdown(question.get("explanation"))
         answer_check_lines = render_answer_check_markdown(question.get("answer_check"))
@@ -655,6 +753,24 @@ def render_answer_source_markdown(question: dict) -> list[str]:
         "这道题未在页面中读取到标准正确答案，当前答案可能来自我的答案或为空，详见 review-needed.md。",
         "",
     ]
+
+
+def render_question_images_markdown(question: dict) -> list[str]:
+    images = normalize_images(question.get("images", []))
+    if not images:
+        return []
+    lines = ["**题目图片：**", ""]
+    for index, image in enumerate(images, 1):
+        label = f"选项 {image['option']}" if image.get("option") else "题干"
+        alt = image.get("alt") or image.get("title") or label
+        src = image_payload_url(image)
+        lines.extend([f"**{index}. {label}：**", f"![{escape_markdown_alt(alt)}]({src})", ""])
+    lines.append("")
+    return lines
+
+
+def escape_markdown_alt(text: str) -> str:
+    return re.sub(r"[\[\]\n\r]", " ", text).strip() or "题目图片"
 
 
 def render_explanation_markdown(explanation: object) -> list[str]:
@@ -801,6 +917,7 @@ def write_docx(questions: list[dict], title: str, output_path: Path) -> None:
                 run.bold = True
                 run.font.color.rgb = RGBColor(34, 139, 34)
                 paragraph.add_run("  ✅")
+        add_question_images_docx(document, question)
         add_answer_check_docx(document, question.get("answer_check"))
         add_explanation_docx(document, question.get("explanation"))
         document.add_paragraph(f"解析来源：{_source_label(question.get('explanation_source', 'unknown'))}")
@@ -852,6 +969,33 @@ def add_answer_check_docx(document, answer_check: object) -> None:
         return
     add_callout_paragraph(document, "答案可能需要复核")
     add_body_paragraph(document, "这道题的导出答案与模型校验结果存在差异或不确定，详见 review-needed.md。")
+
+
+def add_question_images_docx(document, question: dict) -> None:
+    from docx.shared import Inches
+
+    images = normalize_images(question.get("images", []))
+    if not images:
+        return
+    add_callout_paragraph(document, "题目图片：")
+    for index, image in enumerate(images, 1):
+        label = f"选项 {image['option']}" if image.get("option") else "题干"
+        caption = image.get("alt") or image.get("title") or label
+        add_body_paragraph(document, f"{index}. {label}：{caption}")
+        if image.get("data_url"):
+            try:
+                document.add_picture(BytesIO(decode_data_url(image["data_url"])), width=Inches(5.3))
+            except Exception:
+                add_body_paragraph(document, f"图片写入失败：{image.get('url', '')}")
+        elif image.get("url"):
+            add_body_paragraph(document, f"图片链接：{image['url']}")
+
+
+def decode_data_url(value: str) -> bytes:
+    match = re.match(r"^data:image/[^;]+;base64,(.+)$", value or "", re.IGNORECASE | re.DOTALL)
+    if not match:
+        raise ValueError("不是有效的图片 data URL")
+    return base64.b64decode(match.group(1), validate=True)
 
 
 def add_explanation_docx(document, explanation: object) -> None:
