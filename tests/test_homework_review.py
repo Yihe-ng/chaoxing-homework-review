@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts import homework_review
 
@@ -197,7 +198,8 @@ class HomeworkReviewTests(unittest.TestCase):
             "explanation_source": "ai",
         }
 
-        markdown = homework_review.render_markdown([question], "复习资料")
+        with patch.dict(os.environ, {"AI_MODEL": "deepseek-v4-flash"}, clear=False):
+            markdown = homework_review.render_markdown([question], "复习资料")
 
         self.assertIn("# 复习资料", markdown)
         self.assertIn("题型：单选题", markdown)
@@ -212,7 +214,7 @@ class HomeworkReviewTests(unittest.TestCase):
         self.assertIn("> 看到 Artificial Intelligence 就对应 AI。", markdown)
         self.assertIn("---", markdown)
         self.assertIn("- **A. AI** ✅", markdown)
-        self.assertIn("解析来源：AI", markdown)
+        self.assertIn("解析来源：deepseek-v4-flash", markdown)
         self.assertLess(markdown.index("**答案：AI**"), markdown.index("题型：单选题"))
         self.assertLess(markdown.index("题型：单选题"), markdown.index("- **A. AI** ✅"))
         self.assertLess(markdown.index("- **A. AI** ✅"), markdown.index("**解析**"))
@@ -370,7 +372,7 @@ class HomeworkReviewTests(unittest.TestCase):
 
         rendered = "\n".join(lines)
         self.assertIn("答案可能需要复核", rendered)
-        self.assertIn("详见 review-needed.md", rendered)
+        self.assertIn("详见对应的复核清单", rendered)
         self.assertNotIn("校验理由", rendered)
         self.assertNotIn("模型判断：B", rendered)
 
@@ -393,7 +395,7 @@ class HomeworkReviewTests(unittest.TestCase):
 
         text = "\n".join(paragraph.text for paragraph in document.paragraphs)
         self.assertIn("答案可能需要复核", text)
-        self.assertIn("详见 review-needed.md", text)
+        self.assertIn("详见对应的复核清单", text)
 
     def test_answer_visibility_risk_is_shown_as_short_warning(self):
         lines = homework_review.render_answer_source_markdown(
@@ -402,7 +404,29 @@ class HomeworkReviewTests(unittest.TestCase):
 
         rendered = "\n".join(lines)
         self.assertIn("答案来源需要留意", rendered)
-        self.assertIn("详见 review-needed.md", rendered)
+        self.assertIn("详见对应的复核清单", rendered)
+
+    def test_print_run_summary_can_show_custom_review_needed_path(self):
+        messages = []
+
+        with patch("builtins.print", lambda *args, **kwargs: messages.append(" ".join(str(arg) for arg in args))):
+            homework_review.print_run_summary(
+                {
+                    "total": 1,
+                    "cache": 0,
+                    "ai": 1,
+                    "failed": 0,
+                    "review_needed": 1,
+                },
+                Path("output/人工智能基础/review"),
+                "人工智能基础-混合智能-复习资料",
+                review_needed_path=Path(
+                    "output/人工智能基础/review/人工智能基础-混合智能-复习资料-复核清单.md"
+                ),
+            )
+
+        rendered = "\n".join(messages)
+        self.assertIn("人工智能基础-混合智能-复习资料-复核清单.md", rendered)
 
     def test_review_needed_markdown_includes_answer_visibility_risk(self):
         markdown = homework_review.render_review_needed_markdown(
@@ -580,6 +604,22 @@ class HomeworkReviewTests(unittest.TestCase):
 
         self.assertEqual(enriched[0]["explanation_source"], "cache")
         self.assertEqual(enriched[0]["cached_explanation_source"], "ai")
+
+    def test_cached_ai_explanation_source_shows_model_name(self):
+        question = {
+            "type": "判断题",
+            "question": "机器学习是人工智能分支。",
+            "answer": "正确",
+            "options": [],
+            "explanation": {"correct_reason": "缓存解析"},
+            "explanation_source": "cache",
+            "cached_explanation_source": "ai",
+        }
+
+        with patch.dict(os.environ, {"AI_MODEL": "deepseek-chat"}, clear=False):
+            markdown = homework_review.render_markdown([question], "复习资料")
+
+        self.assertIn("解析来源：deepseek-chat（已缓存）", markdown)
 
     def test_cleans_multiselect_answers_and_duplicate_option_labels(self):
         raw = {
