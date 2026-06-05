@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import mimetypes
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
@@ -15,6 +18,7 @@ from scripts import chaoxing_parser
 COURSE_LIST_URL = "https://mooc1-1.chaoxing.com/visit/interaction"
 COURSE_LIST_DATA_URL = "https://mooc1-1.chaoxing.com/mooc-ans/visit/courselistdata"
 COURSE_MIDDLE_URL = "https://mooc1-1.chaoxing.com/mooc-ans/visit/stucoursemiddle"
+DEFAULT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
@@ -115,12 +119,44 @@ class ChaoxingClient:
         page = self.fetch_text(work["url"], referer=referer)
         if is_permission_or_login_page(page.text):
             raise ChaoxingClientError(f"无法进入作业详情：{work.get('title', work['url'])}")
-        return chaoxing_parser.parse_work_detail(
+        homework = chaoxing_parser.parse_work_detail(
             page.text,
             course_name=course_name,
             homework_title=work.get("title", ""),
             detail_url=page.url,
         )
+        self.embed_homework_images(homework, referer=page.url)
+        return homework
+
+    def embed_homework_images(self, homework: dict, referer: str = "") -> None:
+        for url, images in _homework_images_by_url(homework).items():
+            if not url or url.startswith("data:image/"):
+                continue
+            try:
+                data_url = self.download_image_data_url(url, referer=referer)
+            except Exception as exc:
+                for image in images:
+                    image["download_error"] = str(exc)
+                continue
+            for image in images:
+                image["data_url"] = data_url
+
+    def download_image_data_url(self, url: str, referer: str = "") -> str:
+        max_bytes = image_max_bytes()
+        headers = {"Accept": "image/*"}
+        if referer:
+            headers["Referer"] = referer
+        response = self.session.get(url, headers=headers, timeout=self.timeout, allow_redirects=True)
+        if response.status_code >= 400:
+            raise ChaoxingClientError(f"图片下载失败 HTTP {response.status_code}: {url}")
+        content = response.content
+        if len(content) > max_bytes:
+            raise ChaoxingClientError(f"图片超过大小限制 {max_bytes} bytes: {url}")
+        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if not content_type.startswith("image/"):
+            content_type = mimetypes.guess_type(url)[0] or "image/jpeg"
+        encoded = base64.b64encode(content).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
 
 
 def build_course_middle_url(course: dict) -> str:
@@ -187,3 +223,23 @@ def load_storage_state(path: Path) -> dict:
     import json
 
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def image_max_bytes() -> int:
+    try:
+        return max(1, int(os.getenv("CHAOXING_IMAGE_MAX_BYTES", str(DEFAULT_IMAGE_MAX_BYTES))))
+    except ValueError:
+        return DEFAULT_IMAGE_MAX_BYTES
+
+
+def _homework_images_by_url(homework: dict) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for question in homework.get("questions", []):
+        for image in question.get("images", []):
+            if isinstance(image, dict):
+                grouped.setdefault(str(image.get("url", "")), []).append(image)
+        for option in question.get("option_items", []):
+            for image in option.get("images", []):
+                if isinstance(image, dict):
+                    grouped.setdefault(str(image.get("url", "")), []).append(image)
+    return grouped

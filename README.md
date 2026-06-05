@@ -48,10 +48,13 @@ AI_API_KEY=你的 API 密钥
 AI_BASE_URL=https://api.deepseek.com
 AI_MODEL=deepseek-v4-flash
 AI_MAX_TOKENS=2000
+AI_VISION_ENABLED=false
+AI_VISION_MAX_IMAGES=4
 DOCX_FONT=Microsoft YaHei
 ```
 
 设 `AI_API_KEY` 即可。也兼容 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`。
+当 `AI_VISION_ENABLED=false` 时，程序无法识别包含图片的题目；请开启并将 `AI_MODEL` 改为支持视觉识别的模型，以便正常处理带图片的题目。
 
 `CHAOXING_*` 等采集相关变量都有内置默认值，无需在 `.env` 中设置，详见[配置参考](#配置参考)。
 
@@ -198,6 +201,8 @@ output/
 | `AI_MAX_TOKENS` | `2000` | 每次请求最大 token 数 |
 | `AI_TEMPERATURE` | `0.2` | 生成温度 |
 | `AI_THINKING` | `disabled` | DeepSeek 思考模式 |
+| `AI_VISION_ENABLED` | `false` | 是否把采集到的题目图片发送给支持识图的模型 |
+| `AI_VISION_MAX_IMAGES` | `4` | 每道题最多随请求发送的图片数量 |
 | `DOCX_FONT` | `Microsoft YaHei` | Word 文档字体 |
 | `CHAOXING_STATE_PATH` | `.local/chaoxing_state.json` | 登录态保存路径 |
 | `CHAOXING_HEADLESS` | `false` | 是否无头模式启动浏览器 |
@@ -205,6 +210,15 @@ output/
 | `CHAOXING_REVIEW_AFTER_COLLECT` | `true` | 采集后是否提示生成复习资料 |
 
 > 也兼容 DeepSeek 别名：`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`。
+
+图片题说明：采集器会保存题干和选项中的图片 URL，但默认不会发送给 AI。
+只有确认 `AI_MODEL` 支持 OpenAI Chat Completions 多模态 `image_url`
+输入时，才把 `.env` 中的 `AI_VISION_ENABLED` 改为 `true`。
+新采集的图片会用当前学习通登录态下载并写入 `data_url`，发给 AI 时优先
+使用内嵌图片数据，避免第三方模型服务商直接访问学习通图片 URL 时遇到 403。
+如果使用旧的 raw JSON，需要重新采集一次图片题。
+生成结果中，Markdown 会用图片语法渲染题目图片，Word 文档会在题目后方
+直接插入图片。
 
 ## 供 AI 编程助手使用
 

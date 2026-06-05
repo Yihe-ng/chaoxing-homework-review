@@ -116,7 +116,7 @@ def parse_work_detail(
     soup = BeautifulSoup(html, "lxml")
     params = _query_params(detail_url)
     questions = [
-        _parse_question_block(block, index)
+        _parse_question_block(block, index, page_url=detail_url)
         for index, block in enumerate(soup.select(".singleQuesId"), 1)
     ]
     return {
@@ -134,13 +134,11 @@ def parse_work_detail(
     }
 
 
-def _parse_question_block(block, index: int) -> dict:
-    # TODO: Capture rich media in question blocks, including stem images,
-    # option images, formula images, and attachment links.
+def _parse_question_block(block, index: int, *, page_url: str = "") -> dict:
     question_id = block.get("id") or block.get("data") or ""
     q_type = _question_type(block)
-    options = _options(block)
-    option_lines = [f"{item['label']}. {item['text']}".strip() for item in options]
+    options = _options(block, page_url)
+    option_lines = [_option_line(item) for item in options]
     student_answer = _answer_text(block, ".stuAnswerContent")
     correct_answer = _answer_text(block, ".rightAnswerContent")
     if not student_answer:
@@ -149,6 +147,7 @@ def _parse_question_block(block, index: int) -> dict:
         correct_answer = _answer_from_label(block, "正确答案")
     answer_visibility = _answer_visibility(student_answer, correct_answer)
     answer = correct_answer or student_answer
+    images = _merge_question_images(_images(block, page_url), options)
     return {
         "index": index,
         "id": question_id,
@@ -160,6 +159,7 @@ def _parse_question_block(block, index: int) -> dict:
         "correct_answer": correct_answer,
         "answer": answer,
         "score": _score(block),
+        "images": images,
         # TODO: Parse platform-provided explanations when Chaoxing exposes
         # them. Current fixtures do not include homework with existing analysis.
         "analysis": "",
@@ -197,7 +197,7 @@ def _question_text(block, q_type: str) -> str:
     return clean_text(text)
 
 
-def _options(block) -> list[dict]:
+def _options(block, page_url: str = "") -> list[dict]:
     option_items = []
     nodes = block.select("ul li")
     if nodes:
@@ -209,12 +209,72 @@ def _options(block) -> list[dict]:
             if _looks_like_option(clean_text(line))
         ]
     for raw in raw_options:
+        option_images = _images(nodes[len(option_items)], page_url) if nodes else []
         match = re.match(r"^([A-Z])\s*[.．、]\s*(.*)$", raw)
         if match:
-            option_items.append({"label": match.group(1), "text": clean_text(match.group(2))})
+            label = match.group(1)
+            text = clean_text(match.group(2)) or ("[图片]" if option_images else "")
+            item = {"label": label, "text": text}
+            if option_images:
+                item["images"] = _tag_option_images(option_images, label)
+            option_items.append(item)
         elif raw:
-            option_items.append({"label": "", "text": raw})
+            item = {"label": "", "text": raw}
+            if option_images:
+                item["images"] = option_images
+            option_items.append(item)
+        elif option_images:
+            option_items.append({"label": "", "text": "[图片]", "images": option_images})
     return option_items
+
+
+def _option_line(item: dict) -> str:
+    label = item.get("label", "")
+    text = item.get("text", "")
+    return clean_text(f"{label}. {text}" if label else text)
+
+
+def _merge_question_images(images: list[dict], options: list[dict]) -> list[dict]:
+    tagged_by_url = {}
+    for option in options:
+        for image in option.get("images", []):
+            tagged_by_url[image.get("url", "")] = image
+    merged = []
+    for image in images:
+        merged.append(tagged_by_url.get(image.get("url", ""), image))
+    return merged
+
+
+def _images(block, page_url: str = "") -> list[dict]:
+    items = []
+    seen: set[str] = set()
+    for image in block.select("img"):
+        url = _image_url(image, page_url)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        items.append(
+            {
+                "url": url,
+                "alt": clean_text(image.get("alt", "")),
+                "title": clean_text(image.get("title", "")),
+            }
+        )
+    return items
+
+
+def _tag_option_images(images: list[dict], label: str) -> list[dict]:
+    return [{**image, "option": label} for image in images]
+
+
+def _image_url(image, page_url: str = "") -> str:
+    for attr in ("data-original", "data-src", "data-url", "file", "src"):
+        value = clean_text(image.get(attr, ""))
+        if value:
+            if value.startswith("data:image/"):
+                return value
+            return urljoin(page_url or CHAOXING_HOST, value)
+    return ""
 
 
 def _score(block) -> str:
