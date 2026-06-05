@@ -565,7 +565,14 @@ def build_run_summary(questions: list[dict]) -> dict[str, int]:
     return summary
 
 
-def print_run_summary(summary: dict[str, int], output_dir: Path, title: str, *, docx_failed: bool = False) -> None:
+def print_run_summary(
+    summary: dict[str, int],
+    output_dir: Path,
+    title: str,
+    *,
+    docx_failed: bool = False,
+    review_needed_path: Path | None = None,
+) -> None:
     print("处理汇总：", flush=True)
     print(f"- 总题数：{summary['total']}", flush=True)
     print(f"- 使用缓存：{summary['cache']}", flush=True)
@@ -577,7 +584,7 @@ def print_run_summary(summary: dict[str, int], output_dir: Path, title: str, *, 
     else:
         print(f"- Word：{output_dir / f'{title}.docx'}", flush=True)
     print(f"- Markdown：{output_dir / f'{title}.md'}", flush=True)
-    print(f"- 复核清单：{output_dir / 'review-needed.md'}", flush=True)
+    print(f"- 复核清单：{review_needed_path or output_dir / 'review-needed.md'}", flush=True)
     if summary.get("failed", 0) > 0:
         print(
             f"> {summary['failed']} 题未生成解析（已成功的 {summary['total'] - summary['failed']} 题不受影响）。"
@@ -613,7 +620,7 @@ def render_markdown(questions: list[dict], title: str) -> str:
             lines.append(f"- {format_option_markdown(option, question.get('answer', ''))}")
         if question.get("options"):
             lines.append("")
-        source = question.get("explanation_source", "unknown")
+        source_label = explanation_source_label(question)
         explanation_lines = render_explanation_markdown(question.get("explanation"))
         answer_check_lines = render_answer_check_markdown(question.get("answer_check"))
         answer_source_lines = render_answer_source_markdown(question)
@@ -624,7 +631,7 @@ def render_markdown(questions: list[dict], title: str) -> str:
                 *answer_source_lines,
                 *answer_check_lines,
                 *explanation_lines,
-                f"解析来源：{_source_label(source)}",
+                f"解析来源：{source_label}",
                 "",
                 "---",
                 "",
@@ -641,7 +648,7 @@ def render_answer_check_markdown(answer_check: object) -> list[str]:
         return []
     return [
         "**答案可能需要复核**",
-        "这道题的导出答案与模型校验结果存在差异或不确定，详见 review-needed.md。",
+        "这道题的导出答案与模型校验结果存在差异或不确定，详见对应的复核清单。",
         "",
     ]
 
@@ -652,7 +659,7 @@ def render_answer_source_markdown(question: dict) -> list[str]:
         return []
     return [
         "**答案来源需要留意**",
-        "这道题未在页面中读取到标准正确答案，当前答案可能来自我的答案或为空，详见 review-needed.md。",
+        "这道题未在页面中读取到标准正确答案，当前答案可能来自我的答案或为空，详见对应的复核清单。",
         "",
     ]
 
@@ -754,8 +761,25 @@ def is_correct_option(option: str, answer: str) -> bool:
     return any(part == option_label or part == option_text for part in answer_parts)
 
 
+def ai_model_label() -> str:
+    return os.getenv("AI_MODEL") or os.getenv("DEEPSEEK_MODEL") or DEFAULT_MODEL
+
+
+def explanation_source_label(question: dict) -> str:
+    source = question.get("explanation_source", "unknown")
+    if source == "ai":
+        return ai_model_label()
+    if source == "cache":
+        cached_source = question.get("cached_explanation_source", "")
+        if cached_source == "ai":
+            return f"{ai_model_label()}（已缓存）"
+        if cached_source:
+            return f"{_source_label(cached_source)}（已缓存）"
+    return _source_label(str(source))
+
+
 def _source_label(source: str) -> str:
-    return {"ai": "AI", "platform": "平台", "cache": "缓存", "missing": "未生成"}.get(
+    return {"platform": "平台", "cache": "缓存", "missing": "未生成"}.get(
         source, source
     )
 
@@ -803,7 +827,7 @@ def write_docx(questions: list[dict], title: str, output_path: Path) -> None:
                 paragraph.add_run("  ✅")
         add_answer_check_docx(document, question.get("answer_check"))
         add_explanation_docx(document, question.get("explanation"))
-        document.add_paragraph(f"解析来源：{_source_label(question.get('explanation_source', 'unknown'))}")
+        document.add_paragraph(f"解析来源：{explanation_source_label(question)}")
         add_separator(document)
     document.save(str(output_path))
 
@@ -851,7 +875,7 @@ def add_answer_check_docx(document, answer_check: object) -> None:
     if not item["needs_review"] and item["risk_level"] == "low":
         return
     add_callout_paragraph(document, "答案可能需要复核")
-    add_body_paragraph(document, "这道题的导出答案与模型校验结果存在差异或不确定，详见 review-needed.md。")
+    add_body_paragraph(document, "这道题的导出答案与模型校验结果存在差异或不确定，详见对应的复核清单。")
 
 
 def add_explanation_docx(document, explanation: object) -> None:
@@ -984,7 +1008,13 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
         write_docx(enriched, title, output_dir / f"{title}.docx")
     except PermissionError:
         docx_failed = True
-    print_run_summary(build_run_summary(enriched), output_dir, title, docx_failed=docx_failed)
+    print_run_summary(
+        build_run_summary(enriched),
+        output_dir,
+        title,
+        docx_failed=docx_failed,
+        review_needed_path=output_dir / "review-needed.md",
+    )
     return enriched
 
 

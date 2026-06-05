@@ -6,7 +6,7 @@ import argparse
 import os
 from pathlib import Path
 
-from scripts import chaoxing_auth, chaoxing_client, chaoxing_collect, homework_review
+from scripts import chaoxing_auth, chaoxing_client, chaoxing_collect, homework_review, review_naming
 
 
 def main() -> None:
@@ -179,16 +179,30 @@ def run_review_for_course(
     safe_course = chaoxing_collect.safe_filename(course_name)
     raw_dir = output_root / safe_course / "raw"
     review_dir = output_root / safe_course / "review"
-    title = f"{course_name}-完整复习资料"
     print(f"生成复习资料：{course_name}", flush=True)
     input_source = raw_dir if review_all else list(input_paths or [])
     if review_all:
         print("生成范围：课程 raw 目录全部作业（包含历史采集文件）。", flush=True)
     else:
         print(f"生成范围：仅本轮选中的 {len(input_source)} 个作业。", flush=True)
+    homework_titles = [] if review_all else review_naming.load_homework_titles(input_source)
+    title = review_naming.build_review_title(
+        course_name,
+        homework_titles,
+        review_all=review_all,
+    )
     questions = homework_review.load_questions(input_source)
     cache_path = review_dir / "explanations.cache.json"
     review_dir.mkdir(parents=True, exist_ok=True)
+    output_stem = review_naming.unique_output_stem(
+        review_dir,
+        title,
+        suffixes=[".docx", ".md", "-复核清单.md"],
+    )
+    markdown_path = review_dir / f"{output_stem}.md"
+    docx_path = review_dir / f"{output_stem}.docx"
+    review_needed_path = review_dir / f"{output_stem}-复核清单.md"
+    print(f"输出标题：{title}", flush=True)
     cache = homework_review.load_cache(cache_path)
 
     def cache_writer(updated_cache, processed):
@@ -208,20 +222,24 @@ def run_review_for_course(
     cache = homework_review.update_cache(cache, enriched)
     homework_review.save_json(cache_path, cache)
     homework_review.save_json(review_dir / "questions.enriched.json", enriched)
-    (review_dir / "review-needed.md").write_text(
+    review_needed_path.write_text(
         homework_review.render_review_needed_markdown(enriched, f"{title}-需复核题目"),
         encoding="utf-8",
     )
-    (review_dir / f"{title}.md").write_text(
+    markdown_path.write_text(
         homework_review.render_markdown(enriched, title), encoding="utf-8"
     )
     docx_failed = False
     try:
-        homework_review.write_docx(enriched, title, review_dir / f"{title}.docx")
+        homework_review.write_docx(enriched, title, docx_path)
     except PermissionError:
         docx_failed = True
     homework_review.print_run_summary(
-        homework_review.build_run_summary(enriched), review_dir, title, docx_failed=docx_failed
+        homework_review.build_run_summary(enriched),
+        review_dir,
+        output_stem,
+        docx_failed=docx_failed,
+        review_needed_path=review_needed_path,
     )
 
 
