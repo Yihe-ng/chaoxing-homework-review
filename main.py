@@ -14,12 +14,14 @@ def main() -> None:
     parser.add_argument("--output-dir", default=None, help="Output directory. Defaults to CHAOXING_OUTPUT_DIR or output.")
     parser.add_argument("--no-review", action="store_true", help="Collect JSON only, without running homework-review.")
     parser.add_argument("--review-all", action="store_true", help="When reviewing after collection, use all JSON files in the course raw directory.")
-    parser.add_argument("--verify-answers", action="store_true", help="Enable answer verification during review.")
+    parser.add_argument("--verify-answers", action="store_true", default=None, help="Enable answer verification during review.")
     parser.add_argument("--course", action="append", help="Course keyword. Can be repeated. Skips the course search prompt.")
     parser.add_argument("--yes", action="store_true", help="Use defaults for prompts when possible.")
     args = parser.parse_args()
 
     homework_review.load_dotenv()
+    if args.verify_answers is None:
+        args.verify_answers = homework_review.env_flag("VERIFY_ANSWERS", False)
     output_root = Path(args.output_dir or os.getenv("CHAOXING_OUTPUT_DIR", "output"))
 
     state_path = chaoxing_auth.ensure_login_state()

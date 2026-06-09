@@ -198,6 +198,7 @@ output/
 | `AI_TEMPERATURE` | `0.2` | Generation temperature |
 | `AI_THINKING` | `disabled` | DeepSeek thinking mode |
 | `DOCX_FONT` | `Microsoft YaHei` | Word document font |
+| `VERIFY_ANSWERS` | `false` | Whether to independently verify exported answers (overridable via `--verify-answers`) |
 | `CHAOXING_STATE_PATH` | `.local/chaoxing_state.json` | Login state file |
 | `CHAOXING_HEADLESS` | `false` | Run browser in headless mode |
 | `CHAOXING_OUTPUT_DIR` | `output` | Collection output root |

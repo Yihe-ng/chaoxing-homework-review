@@ -204,6 +204,7 @@ output/
 | `AI_VISION_ENABLED` | `false` | 是否把采集到的题目图片发送给支持识图的模型 |
 | `AI_VISION_MAX_IMAGES` | `4` | 每道题最多随请求发送的图片数量 |
 | `DOCX_FONT` | `Microsoft YaHei` | Word 文档字体 |
+| `VERIFY_ANSWERS` | `false` | 是否让 AI 独立校验导出答案（可通过 `--verify-answers` 临时覆盖） |
 | `CHAOXING_STATE_PATH` | `.local/chaoxing_state.json` | 登录态保存路径 |
 | `CHAOXING_HEADLESS` | `false` | 是否无头模式启动浏览器 |
 | `CHAOXING_OUTPUT_DIR` | `output` | 采集输出根目录 |
