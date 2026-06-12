@@ -19,3 +19,4 @@ questions.enriched.json
 !skills/**/*.md
 !README.en.md
 docs/
+.codegraph/

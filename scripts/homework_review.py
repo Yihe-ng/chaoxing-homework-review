@@ -1113,6 +1113,8 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
     load_dotenv(Path.cwd() / ".env")
     if input_path.is_dir():
         load_dotenv(input_path / ".env")
+    if args.verify_answers is None:
+        args.verify_answers = env_flag("VERIFY_ANSWERS", False)
 
     questions = load_questions(input_path)
     questions = apply_limit(questions, args.limit)
@@ -1180,6 +1182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--verify-answers",
         action="store_true",
+        default=None,
         help="Ask the model to independently check exported answers and flag risks.",
     )
     parser.add_argument(
