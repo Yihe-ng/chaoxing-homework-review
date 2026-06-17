@@ -195,7 +195,19 @@ def save_json_atomic(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
     temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    for attempt in range(3):
+        try:
+            temp_path.replace(path)
+            return
+        except PermissionError:
+            if attempt == 2:
+                break
+            time.sleep(0.5)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        temp_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def docx_font_name() -> str:
@@ -706,9 +718,12 @@ def update_cache(cache: dict[str, dict], questions: Iterable[dict]) -> dict[str,
     updated = dict(cache)
     for question in questions:
         if question.get("explanation") and question.get("explanation_source") not in ("missing", "failed"):
+            source = question.get("explanation_source", "ai")
+            if source == "cache":
+                source = question.get("cached_explanation_source", "ai")
             cached_question = {
                 "explanation": normalize_explanation(question["explanation"]),
-                "explanation_source": question.get("explanation_source", "ai"),
+                "explanation_source": source,
             }
             if question.get("answer_check"):
                 cached_question["answer_check"] = normalize_answer_check(question["answer_check"])
