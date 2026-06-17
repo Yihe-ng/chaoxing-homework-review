@@ -22,6 +22,11 @@ def main() -> None:
     homework_review.load_dotenv()
     if args.verify_answers is None:
         args.verify_answers = homework_review.env_flag("VERIFY_ANSWERS", False)
+    model = os.getenv("AI_MODEL") or "deepseek-v4-flash"
+    vision = "开启" if homework_review.env_flag("AI_VISION_ENABLED") else "关闭"
+    verify = "开启" if args.verify_answers else "关闭"
+    print(f"[info] 模型：{model}  |  图片识别：{vision}  |  答案校验：{verify}", flush=True)
+    print("[info] 随时可按 Ctrl+C 退出", flush=True)
     output_root = Path(args.output_dir or os.getenv("CHAOXING_OUTPUT_DIR", "output"))
 
     state_path = chaoxing_auth.ensure_login_state()
@@ -136,20 +141,25 @@ def course_label(course: dict) -> str:
 def multi_select(message: str, choices: list[dict], labeler, *, default_all: bool = False) -> list[dict]:
     if not choices:
         return []
-    try:
-        from InquirerPy import inquirer  # pyright: ignore[reportMissingImports]
+    selected = _try_inquirer_checkbox(message, choices, labeler, default_all)
+    if selected is not None:
+        if selected or default_all:
+            return list(selected)
+        print("未勾选项目，改用编号选择。", flush=True)
+    return numbered_select(choices, labeler)
 
-        selected = inquirer.checkbox(
+
+def _try_inquirer_checkbox(message, choices, labeler, default_all):
+    try:
+        from InquirerPy import inquirer  # pyright: ignore
+
+        return inquirer.checkbox(  # pyright: ignore
             message=message,
             choices=[{"name": labeler(item), "value": item, "enabled": default_all} for item in choices],
             instruction="空格选择，回车确认",
         ).execute()
-        if selected or default_all:
-            return list(selected)
-        print("未勾选项目，改用编号选择。", flush=True)
     except Exception:
-        pass
-    return numbered_select(choices, labeler)
+        return None
 
 
 def numbered_select(choices: list[dict], labeler) -> list[dict]:
@@ -182,7 +192,7 @@ def run_review_for_course(
     raw_dir = output_root / safe_course / "raw"
     review_dir = output_root / safe_course / "review"
     print(f"生成复习资料：{course_name}", flush=True)
-    input_source = raw_dir if review_all else list(input_paths or [])
+    input_source: list[Path] = sorted(raw_dir.rglob("*.json")) if review_all else list(input_paths or [])
     if review_all:
         print("生成范围：课程 raw 目录全部作业（包含历史采集文件）。", flush=True)
     else:
@@ -233,6 +243,8 @@ def run_review_for_course(
     )
     docx_failed = False
     try:
+        font = os.getenv("DOCX_FONT") or "Microsoft YaHei"
+        print(f"[info] 文档字体：{font}", flush=True)
         homework_review.write_docx(enriched, title, docx_path)
     except PermissionError:
         docx_failed = True

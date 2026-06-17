@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import email.utils
 import hashlib
 import json
 import os
@@ -194,7 +195,19 @@ def save_json_atomic(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
     temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    for attempt in range(3):
+        try:
+            temp_path.replace(path)
+            return
+        except PermissionError:
+            if attempt == 2:
+                break
+            time.sleep(0.5)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        temp_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def docx_font_name() -> str:
@@ -221,6 +234,26 @@ def _http_error_message(code: int) -> str:
         503: "HTTP 503 服务器繁忙，请稍后重试",
     }
     return messages.get(code, f"HTTP {code} 请求异常，请稍后重试")
+
+
+def _parse_retry_after(headers) -> int | None:
+    """Extract Retry-After seconds from response headers. Returns None if absent."""
+    value = headers.get("Retry-After") or headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        seconds = int(value)
+        return max(0, min(seconds, 120))
+    except ValueError:
+        try:
+            parsed = email.utils.parsedate(value)
+            if parsed:
+                retry_time = time.mktime(parsed)
+                wait = int(retry_time - time.time())
+                return max(0, min(wait, 120))
+        except (ValueError, TypeError, OverflowError):
+            pass
+    return None
 
 
 def load_dotenv(path: Path | str = ".env") -> None:
@@ -413,7 +446,15 @@ def call_chat_completion(messages: list[dict]) -> str:
                 raise RuntimeError("API returned empty JSON content.")
             return content
         except urllib.error.HTTPError as exc:
-            if exc.code < 500 or attempt == 2:
+            if exc.code == 429:
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"API 请求失败: {_http_error_message(exc.code)}"
+                    ) from exc
+                wait = _parse_retry_after(exc.headers) or 30
+                time.sleep(wait)
+                continue
+            if exc.code < 500:
                 raise RuntimeError(
                     f"API 请求失败: {_http_error_message(exc.code)}"
                 ) from exc
@@ -550,80 +591,126 @@ def enrich_questions(
     total = len(question_list)
     consecutive_failures = 0
     failed_batch: list[dict] = []
-    for index, question in enumerate(question_list, 1):
-        item = dict(question)
-        key = question_key(item)
-        cached = cache.get(key)
-        if cached and cached.get("explanation") and cached.get("explanation_source") != "failed":
-            log_progress("使用缓存", index, total, item.get("question", ""), logger)
-            item["explanation"] = normalize_explanation(cached["explanation"])
-            item["cached_explanation_source"] = cached.get("explanation_source", "unknown")
-            item["explanation_source"] = "cache"
-            if cached.get("answer_check"):
-                item["answer_check"] = normalize_answer_check(cached["answer_check"])
-            consecutive_failures = 0
-        elif item.get("explanation"):
-            log_progress("使用原解析", index, total, item.get("question", ""), logger)
-            item["explanation"] = normalize_explanation(item["explanation"])
-            item["explanation_source"] = item.get("explanation_source", "platform")
-            consecutive_failures = 0
-        elif dry_run:
-            log_progress("dry-run 占位", index, total, item.get("question", ""), logger)
-            item["explanation"] = normalize_explanation(
-                {"correct_reason": "待生成：dry-run 模式未调用 AI API。"}
-            )
-            item["explanation_source"] = "missing"
-            consecutive_failures = 0
-        else:
-            log_progress("生成解析", index, total, item.get("question", ""), logger)
-            try:
-                item["explanation"] = parse_explanation_response(client(build_prompt(item)))
-                item["explanation_source"] = "ai"
+    try:
+        for index, question in enumerate(question_list, 1):
+            item = dict(question)
+            key = question_key(item)
+            cached = cache.get(key)
+            if cached and cached.get("explanation") and cached.get("explanation_source") != "failed":
+                log_progress("使用缓存", index, total, item.get("question", ""), logger)
+                item["explanation"] = normalize_explanation(cached["explanation"])
+                item["cached_explanation_source"] = cached.get("explanation_source", "unknown")
+                item["explanation_source"] = "cache"
+                if cached.get("answer_check"):
+                    item["answer_check"] = normalize_answer_check(cached["answer_check"])
                 consecutive_failures = 0
-            except Exception as exc:
+            elif item.get("explanation"):
+                log_progress("使用原解析", index, total, item.get("question", ""), logger)
+                item["explanation"] = normalize_explanation(item["explanation"])
+                item["explanation_source"] = item.get("explanation_source", "platform")
+                consecutive_failures = 0
+            elif dry_run:
+                log_progress("dry-run 占位", index, total, item.get("question", ""), logger)
                 item["explanation"] = normalize_explanation(
-                    {
-                        "correct_reason": (
-                            "生成解析失败。请查看 processing_error 字段后重试，"
-                            "或人工补充本题解析。"
-                        )
-                    }
+                    {"correct_reason": "待生成：dry-run 模式未调用 AI API。"}
                 )
-                item["explanation_source"] = "failed"
-                item["processing_error"] = str(exc)
-                consecutive_failures += 1
-                failed_batch.append(item)
-                log_progress("解析失败", index, total, item.get("question", ""), logger)
-                if on_consecutive_failures and consecutive_failures >= 10:
-                    if not on_consecutive_failures(consecutive_failures, list(failed_batch)):
-                        logger("已停止解析，已成功部分可通过缓存复用。")
-                        break
-        if verify_answers and not item.get("answer_check") and item.get("explanation_source") != "failed":
-            log_progress("答案校验", index, total, item.get("question", ""), logger)
-            try:
-                item["answer_check"] = parse_answer_check_response(
-                    client(build_answer_check_prompt(item))
-                )
-            except Exception as exc:
-                item["answer_check"] = normalize_answer_check(
-                    {
-                        "provided_answer": item.get("answer", ""),
-                        "model_answer": "",
-                        "verdict": "uncertain",
-                        "confidence": 0,
-                        "risk_level": "medium",
-                        "reason": f"答案校验失败：{exc}",
-                        "needs_review": True,
-                    }
-                )
-                item["processing_error"] = (
-                    f"{item.get('processing_error', '')}\n答案校验失败：{exc}"
-                ).strip()
-                log_progress("校验失败", index, total, item.get("question", ""), logger)
-        enriched.append(item)
+                item["explanation_source"] = "missing"
+                consecutive_failures = 0
+            else:
+                log_progress("生成解析", index, total, item.get("question", ""), logger)
+                try:
+                    item["explanation"] = parse_explanation_response(client(build_prompt(item)))
+                    item["explanation_source"] = "ai"
+                    consecutive_failures = 0
+                    time.sleep(0.3)
+                except Exception as exc:
+                    item["explanation"] = normalize_explanation(
+                        {
+                            "correct_reason": (
+                                "生成解析失败。请查看 processing_error 字段后重试，"
+                                "或人工补充本题解析。"
+                            )
+                        }
+                    )
+                    item["explanation_source"] = "failed"
+                    item["processing_error"] = str(exc)
+                    consecutive_failures += 1
+                    failed_batch.append(item)
+                    log_progress("解析失败", index, total, item.get("question", ""), logger)
+                    if on_consecutive_failures and consecutive_failures >= 10:
+                        if not on_consecutive_failures(consecutive_failures, list(failed_batch)):
+                            logger("已停止解析，已成功部分可通过缓存复用。")
+                            break
+                        # 用户选择继续 — 从 enriched 弹出失败的题目并逐一重试
+                        retry_start = index - len(failed_batch) + 1
+                        for _ in failed_batch:
+                            enriched.pop()
+                        retry_items = list(failed_batch)
+                        consecutive_failures = 0
+                        failed_batch = []
+                        for ri, retry_item in enumerate(retry_items):
+                            retry_index = retry_start + ri
+                            log_progress("重试解析", retry_index, total, retry_item.get("question", ""), logger)
+                            try:
+                                retry_item["explanation"] = parse_explanation_response(
+                                    client(build_prompt(retry_item))
+                                )
+                                retry_item["explanation_source"] = "ai"
+                                consecutive_failures = 0
+                                time.sleep(0.3)
+                            except Exception as exc2:
+                                retry_item["explanation"] = normalize_explanation(
+                                    {
+                                        "correct_reason": (
+                                            "生成解析失败。请查看 processing_error 字段后重试，"
+                                            "或人工补充本题解析。"
+                                        )
+                                    }
+                                )
+                                retry_item["explanation_source"] = "failed"
+                                retry_item["processing_error"] = str(exc2)
+                                consecutive_failures += 1
+                                failed_batch.append(retry_item)
+                                log_progress(
+                                    "重试失败", retry_index, total, retry_item.get("question", ""), logger
+                                )
+                            enriched.append(retry_item)
+                            if cache_writer:
+                                cache = update_cache(cache, [retry_item])
+                                cache_writer(cache, enriched)
+            if verify_answers and not item.get("answer_check") and item.get("explanation_source") != "failed":
+                log_progress("答案校验", index, total, item.get("question", ""), logger)
+                try:
+                    item["answer_check"] = parse_answer_check_response(
+                        client(build_answer_check_prompt(item))
+                    )
+                    time.sleep(0.3)
+                except Exception as exc:
+                    item["answer_check"] = normalize_answer_check(
+                        {
+                            "provided_answer": item.get("answer", ""),
+                            "model_answer": "",
+                            "verdict": "uncertain",
+                            "confidence": 0,
+                            "risk_level": "medium",
+                            "reason": f"答案校验失败：{exc}",
+                            "needs_review": True,
+                        }
+                    )
+                    item["processing_error"] = (
+                        f"{item.get('processing_error', '')}\n答案校验失败：{exc}"
+                    ).strip()
+                    log_progress("校验失败", index, total, item.get("question", ""), logger)
+            enriched.append(item)
+            if cache_writer:
+                cache = update_cache(cache, [item])
+                cache_writer(cache, enriched)
+    except KeyboardInterrupt:
+        logger("\n用户中断，正在保存已处理的结果...")
         if cache_writer:
-            cache = update_cache(cache, [item])
+            cache = update_cache(cache, enriched)
             cache_writer(cache, enriched)
+        logger(f"已保存 {len(enriched)} 题的处理结果，重新运行命令可继续处理剩余题目。")
     return enriched
 
 
@@ -631,9 +718,12 @@ def update_cache(cache: dict[str, dict], questions: Iterable[dict]) -> dict[str,
     updated = dict(cache)
     for question in questions:
         if question.get("explanation") and question.get("explanation_source") not in ("missing", "failed"):
+            source = question.get("explanation_source", "ai")
+            if source == "cache":
+                source = question.get("cached_explanation_source", "ai")
             cached_question = {
                 "explanation": normalize_explanation(question["explanation"]),
-                "explanation_source": question.get("explanation_source", "ai"),
+                "explanation_source": source,
             }
             if question.get("answer_check"):
                 cached_question["answer_check"] = normalize_answer_check(question["answer_check"])
@@ -818,11 +908,17 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
     for index, question in enumerate(flagged, 1):
         check = normalize_answer_check(question.get("answer_check", {}))
         answer_visibility = question.get("answer_visibility", "correct_answer_visible")
+        homework_title = question.get("homeworkTitle", "")
+        chapter_part = _extract_chapter_label(homework_title)
+        q_index = question.get("index")
+        source_label = f"{chapter_part} 第{q_index}题" if chapter_part and q_index else homework_title
         lines.extend(
             [
                 f"## {index}. {question.get('question', '')}",
                 "",
                 f"课程：{question.get('courseName', '未命名课程')}",
+                "",
+                f"来源：{source_label}",
                 "",
                 f"题型：{question.get('type', '未知')}",
                 "",
@@ -836,7 +932,7 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
             [
                 f"导出答案：{check['provided_answer'] or question.get('answer', '')}",
                 "",
-                f"答案来源：{answer_visibility}",
+                f"答案来源：{_answer_source_label(answer_visibility)}",
                 "",
                 f"模型判断：{check['model_answer'] or '未提供'}",
                 "",
@@ -851,6 +947,20 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
             ]
         )
     return "\n".join(lines).strip() + "\n"
+
+
+def _extract_chapter_label(homework_title: str) -> str:
+    """从作业标题（如"第9章作业"）中提取章节标签（如"第9章"）。"""
+    match = re.search(r"(第[^章]+章)", homework_title)
+    return match.group(1) if match else homework_title
+
+
+def _answer_source_label(visibility: str) -> str:
+    """将 answer_visibility 内部字段转为用户友好的显示标签。"""
+    mapping = {
+        "correct_answer_visible": "学习通导出答案",
+    }
+    return mapping.get(visibility, visibility)
 
 
 def _needs_review(question: dict) -> bool:
@@ -1116,6 +1226,12 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
     if args.verify_answers is None:
         args.verify_answers = env_flag("VERIFY_ANSWERS", False)
 
+    model = os.getenv("AI_MODEL") or "deepseek-v4-flash"
+    vision = "开启" if env_flag("AI_VISION_ENABLED") else "关闭"
+    verify = "开启" if args.verify_answers else "关闭"
+    font = os.getenv("DOCX_FONT") or "Microsoft YaHei"
+    print(f"[info] 模型：{model}  |  图片识别：{vision}  |  答案校验：{verify}  |  文档字体：{font}", flush=True)
+
     questions = load_questions(input_path)
     questions = apply_limit(questions, args.limit)
     cache = load_cache(cache_path)
@@ -1193,10 +1309,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
-    enriched = build_outputs(args)
-    print(f"Processed {len(enriched)} questions.")
+    try:
+        enriched = build_outputs(args)
+        print(f"Processed {len(enriched)} questions.")
+    except KeyboardInterrupt:
+        print("\n用户中断。已处理的部分已保存至输出目录，重新运行命令可继续处理剩余题目。")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

@@ -33,13 +33,17 @@ requests 复用登录态爬取                  去重、合并、清洗题目
 uv sync
 ```
 
-浏览器说明：Playwright 会优先使用系统自带的 Microsoft Edge，无需额外安装。如果系统没有 Edge 或 Chrome，才需要运行：
+浏览器说明：Playwright 会优先使用系统自带的 Microsoft Edge，无需额外安装。**如果系统没有 Edge 或 Chrome**，才需要运行：
 
 ```powershell
 uv run playwright install chromium
 ```
 
-**获取 API 密钥**：本项目默认使用 [DeepSeek](https://platform.deepseek.com/)（注册后在 [API Keys](https://platform.deepseek.com/api_keys) 页面创建密钥）。同时也兼容所有 OpenAI Chat Completions API 格式的提供商（如 OpenAI、Groq、硅基流动等），只需修改 `.env` 中的 `AI_BASE_URL` 和 `AI_MODEL` 即可。
+**获取 API 密钥**：本项目默认使用 [DeepSeek](https://platform.deepseek.com/)（注册后在 [API Keys](https://platform.deepseek.com/api_keys) 页面创建密钥）。同时也兼容所有 OpenAI Chat Completions API 格式的提供商（如 OpenAI、阿里云、硅基流动等），只需修改 `.env` 中的 `AI_BASE_URL` 和 `AI_MODEL` 即可。
+
+[硅基流动](https://cloud.siliconflow.cn/i/lUV35EMH)，可获取国内诸多模型，由我的链接进入可获得16元赠金
+
+[阿里云百炼学生优惠](https://university.aliyun.com/course/promotion25-activity?clubTaskBiz=subTask..12701033..10273..&userCode=nz6zspf5)，国内大学生认证可获得300元代金券
 
 **配置 `.env`**：将 `.env.example` 重命名为 `.env`，然后编辑填入你的密钥：
 
