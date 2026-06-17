@@ -818,11 +818,17 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
     for index, question in enumerate(flagged, 1):
         check = normalize_answer_check(question.get("answer_check", {}))
         answer_visibility = question.get("answer_visibility", "correct_answer_visible")
+        homework_title = question.get("homeworkTitle", "")
+        chapter_part = _extract_chapter_label(homework_title)
+        q_index = question.get("index")
+        source_label = f"{chapter_part} 第{q_index}题" if chapter_part and q_index else homework_title
         lines.extend(
             [
                 f"## {index}. {question.get('question', '')}",
                 "",
                 f"课程：{question.get('courseName', '未命名课程')}",
+                "",
+                f"来源：{source_label}",
                 "",
                 f"题型：{question.get('type', '未知')}",
                 "",
@@ -836,7 +842,7 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
             [
                 f"导出答案：{check['provided_answer'] or question.get('answer', '')}",
                 "",
-                f"答案来源：{answer_visibility}",
+                f"答案来源：{_answer_source_label(answer_visibility)}",
                 "",
                 f"模型判断：{check['model_answer'] or '未提供'}",
                 "",
@@ -851,6 +857,20 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
             ]
         )
     return "\n".join(lines).strip() + "\n"
+
+
+def _extract_chapter_label(homework_title: str) -> str:
+    """从作业标题（如"第9章作业"）中提取章节标签（如"第9章"）。"""
+    match = re.search(r"(第[^章]+章)", homework_title)
+    return match.group(1) if match else homework_title
+
+
+def _answer_source_label(visibility: str) -> str:
+    """将 answer_visibility 内部字段转为用户友好的显示标签。"""
+    mapping = {
+        "correct_answer_visible": "学习通导出答案",
+    }
+    return mapping.get(visibility, visibility)
 
 
 def _needs_review(question: dict) -> bool:
