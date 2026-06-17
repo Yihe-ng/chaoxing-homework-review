@@ -85,7 +85,10 @@ class MainCliTests(unittest.TestCase):
                 verify_answers=False,
             )
 
-        self.assertEqual(captured["input_source"], Path("output/人工智能基础/raw"))
+        self.assertIsInstance(captured["input_source"], list)
+        self.assertTrue(
+            all(str(p).startswith(str(Path("output/人工智能基础/raw"))) for p in captured["input_source"]),
+        )
 
     def test_run_review_uses_dynamic_title_and_unique_output_stem(self):
         captured = {}
