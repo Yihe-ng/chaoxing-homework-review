@@ -52,6 +52,94 @@ def normalize_answer(answer: object) -> str:
     return "；".join(parts) if parts else text
 
 
+def resolve_answer(question: dict) -> dict:
+    visibility = question.get("answer_visibility", "correct_answer_visible")
+    correct_answer = normalize_answer(question.get("correct_answer", ""))
+    student_answer = normalize_answer(question.get("student_answer", ""))
+    exported_answer = normalize_answer(question.get("answer", ""))
+    score = _score_value(question.get("score", ""))
+    full_score = _full_score_from_type(question.get("type", ""))
+
+    if correct_answer:
+        return {
+            "answer": correct_answer,
+            "trusted": True,
+            "source": "correct_answer_visible",
+            "needs_review": False,
+        }
+    if visibility == "correct_answer_visible":
+        return {
+            "answer": exported_answer,
+            "trusted": True,
+            "source": "correct_answer_visible",
+            "needs_review": False,
+        }
+
+    candidate = student_answer or exported_answer
+    if candidate and score is not None and full_score is not None and score == full_score:
+        return {
+            "answer": candidate,
+            "trusted": True,
+            "source": "inferred_from_full_score",
+            "needs_review": True,
+        }
+    if candidate and score == 0 and "判断题" in str(question.get("type", "")):
+        inferred = _opposite_true_false_answer(candidate, question.get("options", []))
+        if inferred:
+            return {
+                "answer": inferred,
+                "trusted": True,
+                "source": "inferred_from_zero_score_true_false",
+                "needs_review": True,
+            }
+
+    return {
+        "answer": "",
+        "trusted": False,
+        "source": "answer_unknown",
+        "needs_review": True,
+    }
+
+
+def _score_value(value: object) -> float | None:
+    match = re.search(r"(\d+(?:\.\d+)?)\s*分", str(value or ""))
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+def _full_score_from_type(value: object) -> float | None:
+    return _score_value(value)
+
+
+def _opposite_true_false_answer(answer: str, options: list[str]) -> str:
+    normalized = re.sub(r"^[A-Z]\.\s*", "", answer).strip()
+    label = answer.strip().upper()
+    labels: dict[str, str] = {}
+    texts: dict[str, str] = {}
+    for option in options:
+        match = re.match(r"^([A-Z])\.\s*(.*)$", str(option).strip())
+        if not match:
+            continue
+        option_label, option_text = match.group(1), match.group(2).strip()
+        labels[option_label] = option_text
+        texts[option_text] = option_label
+    if label in labels:
+        normalized = labels[label]
+    elif normalized in texts:
+        label = texts[normalized]
+
+    if normalized in {"对", "正确", "是", "√"}:
+        return "错" if any(value == "错" for value in labels.values()) else "错误"
+    if normalized in {"错", "错误", "否", "×"}:
+        return "对" if any(value == "对" for value in labels.values()) else "正确"
+    if label == "A" and labels.get("B"):
+        return labels["B"]
+    if label == "B" and labels.get("A"):
+        return labels["A"]
+    return ""
+
+
 def normalize_question(raw: dict, meta: dict | None = None, source_file: str = "") -> dict:
     meta = meta or {}
     question = dict(raw)
@@ -71,12 +159,15 @@ def normalize_question(raw: dict, meta: dict | None = None, source_file: str = "
 
 
 def question_key(question: dict) -> str:
+    resolved = resolve_answer(question)
     payload = {
         "type": question.get("type", ""),
         "question": normalize_question_text(question.get("question", "")),
         "options": [normalize_option(item) for item in question.get("options", [])],
-        "answer": question.get("answer", ""),
+        "answer": resolved["answer"],
     }
+    if resolved["source"] != "correct_answer_visible":
+        payload["answer_source"] = resolved["source"]
     image_urls = [image["url"] for image in normalize_images(question.get("images", []))]
     if image_urls:
         payload["images"] = image_urls
@@ -354,12 +445,16 @@ def image_prompt_note(question: dict) -> str:
 
 
 def build_prompt(question: dict) -> list[dict]:
+    resolved = resolve_answer(question)
+    if not resolved["trusted"]:
+        return build_review_prompt(question)
     options = "\n".join(question.get("options", [])) or "无"
     user = f"""题型：{question.get("type", "")}
 题目：{question.get("question", "")}
 选项：
 {options}
-已知正确答案：{question.get("answer", "")}{image_prompt_note(question)}
+已知正确答案：{resolved["answer"]}
+答案依据：{_answer_source_label(resolved["source"])}{image_prompt_note(question)}
 
 请生成适合复习背诵的中文解析，并严格输出 json。"""
     images = prompt_images(question)
@@ -382,6 +477,47 @@ def build_prompt(question: dict) -> list[dict]:
                 "不要只写标签或名词短语，要展开说明为什么这个知识点与题目有关，"
                 "以及学生复习时应该记住的判断线索。"
                 "如果用户消息包含图片，请结合图片内容判断题干、选项、公式或图表。"
+            ),
+        },
+        {"role": "user", "content": build_user_content(user, images)},
+    ]
+
+
+def build_review_prompt(question: dict) -> list[dict]:
+    options = "\n".join(question.get("options", [])) or "无"
+    student_answer = normalize_answer(
+        question.get("student_answer") or question.get("answer", "")
+    )
+    user = f"""题型：{question.get("type", "")}
+题目：{question.get("question", "")}
+选项：
+{options}
+学生答案：{student_answer or "未读取到"}
+得分：{question.get("score", "") or "未读取到"}
+标准答案未确认：页面未提供老师公布的正确答案，且得分不足以可靠推定标准答案。{image_prompt_note(question)}
+
+请不要把学生答案当作正确答案。请独立分析本题考点，逐项判断各选项是否可能正确。
+如能较高置信度判断答案，请给出 model_answer；否则 model_answer 留空。
+所有结论都必须标明待人工复核，并严格输出 json。"""
+    images = prompt_images(question)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是课程题目复核助手。当前题目没有可靠标准答案，"
+                "你的任务是生成复核型解析，而不是标准答案解析。"
+                "不要默认相信学生答案，不要把模型倾向答案写成已确认正确答案。"
+                "必须只输出合法 json，不要输出 Markdown。json 格式示例："
+                '{"correct_reason":"标准答案未确认。请说明本题考点、'
+                '学生答案与得分暴露出的风险，以及需要人工核对的关键点",'
+                '"model_answer":"模型倾向答案，无法判断则留空",'
+                '"confidence":0.0,'
+                '"wrong_options":[{"option":"A","reason":"逐项说明该选项可能正确、'
+                '可能错误或不确定的理由"}],'
+                '"review_tip":"人工复核时应优先核对教材或课件中的哪类表述",'
+                '"knowledge_points":["本题涉及的知识点"],'
+                '"principles":["同类题判断时可用的原则"]}。'
+                "correct_reason 必须明确包含“标准答案未确认”或“待人工复核”。"
             ),
         },
         {"role": "user", "content": build_user_content(user, images)},
@@ -551,6 +687,8 @@ def normalize_explanation(value: object) -> dict:
 
         return {
             "correct_reason": str(value.get("correct_reason", "")).strip(),
+            "model_answer": normalize_answer(value.get("model_answer", "")),
+            "confidence": _confidence_value(value.get("confidence")),
             "wrong_options": [
                 item for item in normalized_wrong_options if item["option"] or item["reason"]
             ],
@@ -560,6 +698,8 @@ def normalize_explanation(value: object) -> dict:
         }
     return {
         "correct_reason": str(value or "").strip(),
+        "model_answer": "",
+        "confidence": 0.0,
         "wrong_options": [],
         "review_tip": "",
         "knowledge_points": [],
@@ -573,6 +713,14 @@ def _string_list(value: object) -> list[str]:
     if value:
         return [str(value).strip()]
     return []
+
+
+def _confidence_value(value: object) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, confidence))
 
 
 def enrich_questions(
@@ -619,8 +767,9 @@ def enrich_questions(
             else:
                 log_progress("生成解析", index, total, item.get("question", ""), logger)
                 try:
+                    resolved = resolve_answer(item)
                     item["explanation"] = parse_explanation_response(client(build_prompt(item)))
-                    item["explanation_source"] = "ai"
+                    item["explanation_source"] = "ai" if resolved["trusted"] else "ai_review"
                     consecutive_failures = 0
                     time.sleep(0.3)
                 except Exception as exc:
@@ -652,10 +801,13 @@ def enrich_questions(
                             retry_index = retry_start + ri
                             log_progress("重试解析", retry_index, total, retry_item.get("question", ""), logger)
                             try:
+                                resolved = resolve_answer(retry_item)
                                 retry_item["explanation"] = parse_explanation_response(
                                     client(build_prompt(retry_item))
                                 )
-                                retry_item["explanation_source"] = "ai"
+                                retry_item["explanation_source"] = (
+                                    "ai" if resolved["trusted"] else "ai_review"
+                                )
                                 consecutive_failures = 0
                                 time.sleep(0.3)
                             except Exception as exc2:
@@ -767,7 +919,7 @@ def print_run_summary(
     print(f"- 处理失败：{summary['failed']}", flush=True)
     print(f"- 需复核：{summary['review_needed']}", flush=True)
     if docx_failed:
-        print(f"- Word：⚠ 写入失败（文件被占用）", flush=True)
+        print("- Word：⚠ 写入失败（文件被占用）", flush=True)
     else:
         print(f"- Word：{output_dir / f'{title}.docx'}", flush=True)
     print(f"- Markdown：{output_dir / f'{title}.md'}", flush=True)
@@ -794,17 +946,34 @@ def render_markdown(questions: list[dict], title: str) -> str:
         if course != current_course:
             lines.extend([f"## {course}", ""])
             current_course = course
+        resolved = resolve_answer(question)
+        answer_lines = [f"> **答案：{resolved['answer'] or '未确认'}**"]
+        if not resolved["trusted"]:
+            student_answer = normalize_answer(
+                question.get("student_answer") or question.get("answer", "")
+            )
+            if student_answer:
+                answer_lines.append(f"> 我的答案：{student_answer}")
+            if question.get("score"):
+                answer_lines.append(f"> 得分：{question.get('score')}")
+            model_answer = normalize_explanation(question.get("explanation")).get(
+                "model_answer", ""
+            )
+            if model_answer:
+                answer_lines.append(f"> 模型倾向答案：{model_answer}（待复核）")
+        answer_lines.append(f"> 题型：{question.get('type', '')}")
         lines.extend(
             [
                 f"### {index}. {question.get('question', '')}",
                 "",
-                f"> **答案：{question.get('answer', '')}**",
-                f"> 题型：{question.get('type', '')}",
+                *answer_lines,
                 "",
             ]
         )
         for option in question.get("options", []):
-            lines.append(f"- {format_option_markdown(option, question.get('answer', ''))}")
+            lines.append(
+                f"- {format_option_markdown(option, resolved['answer'] if resolved['trusted'] else '')}"
+            )
         if question.get("options"):
             lines.append("")
 
@@ -844,12 +1013,18 @@ def render_answer_check_markdown(answer_check: object) -> list[str]:
 
 
 def render_answer_source_markdown(question: dict) -> list[str]:
-    visibility = question.get("answer_visibility", "correct_answer_visible")
-    if visibility == "correct_answer_visible":
+    resolved = resolve_answer(question)
+    if resolved["source"] == "correct_answer_visible":
         return []
+    if resolved["trusted"]:
+        return [
+            "**答案来源需要留意**",
+            f"这道题未在页面中读取到标准正确答案，当前答案为{_answer_source_label(resolved['source'])}，详见对应的复核清单。",
+            "",
+        ]
     return [
         "**答案来源需要留意**",
-        "这道题未在页面中读取到标准正确答案，当前答案可能来自我的答案或为空，详见对应的复核清单。",
+        "这道题未在页面中读取到可靠标准答案，正文不把我的答案当作正确答案，详见对应的复核清单。",
         "",
     ]
 
@@ -879,6 +1054,14 @@ def render_explanation_markdown(explanation: object) -> list[str]:
         item["correct_reason"] or "暂无解析。",
         "",
     ]
+    if item.get("model_answer"):
+        lines.extend(
+            [
+                "**模型倾向答案（待复核）：**",
+                f"{item['model_answer']}（置信度：{item['confidence']:.2f}）",
+                "",
+            ]
+        )
     if item["wrong_options"]:
         lines.extend(["**为什么不选：**", ""])
         for wrong in item["wrong_options"]:
@@ -907,7 +1090,10 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
     lines = [f"# {title}", "", f"需复核题目数：{len(flagged)}", ""]
     for index, question in enumerate(flagged, 1):
         check = normalize_answer_check(question.get("answer_check", {}))
-        answer_visibility = question.get("answer_visibility", "correct_answer_visible")
+        resolved = resolve_answer(question)
+        student_answer = normalize_answer(
+            question.get("student_answer") or question.get("answer", "")
+        )
         homework_title = question.get("homeworkTitle", "")
         chapter_part = _extract_chapter_label(homework_title)
         q_index = question.get("index")
@@ -930,9 +1116,13 @@ def render_review_needed_markdown(questions: list[dict], title: str) -> str:
             lines.append("")
         lines.extend(
             [
-                f"导出答案：{check['provided_answer'] or question.get('answer', '')}",
+                f"解析用答案：{resolved['answer'] or '未确认'}",
                 "",
-                f"答案来源：{_answer_source_label(answer_visibility)}",
+                f"我的答案：{student_answer or '未读取到'}",
+                "",
+                f"得分：{question.get('score', '') or '未读取到'}",
+                "",
+                f"答案来源：{_answer_source_label(resolved['source'])}",
                 "",
                 f"模型判断：{check['model_answer'] or '未提供'}",
                 "",
@@ -959,12 +1149,15 @@ def _answer_source_label(visibility: str) -> str:
     """将 answer_visibility 内部字段转为用户友好的显示标签。"""
     mapping = {
         "correct_answer_visible": "学习通导出答案",
+        "inferred_from_full_score": "满分推定答案",
+        "inferred_from_zero_score_true_false": "由判断题 0 分反推",
+        "answer_unknown": "未确认",
     }
     return mapping.get(visibility, visibility)
 
 
 def _needs_review(question: dict) -> bool:
-    if question.get("answer_visibility", "correct_answer_visible") != "correct_answer_visible":
+    if resolve_answer(question)["needs_review"]:
         return True
     if question.get("answer_check"):
         return normalize_answer_check(question["answer_check"])["needs_review"]
@@ -1007,9 +1200,12 @@ def explanation_source_label(question: dict) -> str:
 
 
 def _source_label(source: str) -> str:
-    return {"platform": "平台", "cache": "缓存", "missing": "未生成"}.get(
-        source, source
-    )
+    return {
+        "platform": "平台",
+        "cache": "缓存",
+        "missing": "未生成",
+        "ai_review": "模型复核（待人工确认）",
+    }.get(source, source)
 
 
 def write_docx(questions: list[dict], title: str, output_path: Path) -> None:
@@ -1040,20 +1236,35 @@ def write_docx(questions: list[dict], title: str, output_path: Path) -> None:
         question_run.bold = True
         question_run.font.size = Pt(QUESTION_FONT_SIZE_PT)
         question_run.font.color.rgb = RGBColor(46, 91, 170)
+        resolved = resolve_answer(question)
         answer_paragraph = document.add_paragraph()
-        answer_run = answer_paragraph.add_run(f"答案：{question.get('answer', '')}")
+        answer_run = answer_paragraph.add_run(f"答案：{resolved['answer'] or '未确认'}")
         answer_run.bold = True
         answer_run.font.size = Pt(CALLOUT_FONT_SIZE_PT)
         answer_run.font.color.rgb = RGBColor(0, 0, 0)
+        if not resolved["trusted"]:
+            student_answer = normalize_answer(
+                question.get("student_answer") or question.get("answer", "")
+            )
+            if student_answer:
+                answer_paragraph.add_run(f"\n我的答案：{student_answer}")
+            if question.get("score"):
+                answer_paragraph.add_run(f"\n得分：{question.get('score')}")
+            model_answer = normalize_explanation(question.get("explanation")).get(
+                "model_answer", ""
+            )
+            if model_answer:
+                answer_paragraph.add_run(f"\n模型倾向答案：{model_answer}（待复核）")
         answer_paragraph.add_run(f"\n题型：{question.get('type', '')}")
         for option in question.get("options", []):
             paragraph = document.add_paragraph(style="List Bullet")
             run = paragraph.add_run(option)
-            if is_correct_option(option, question.get("answer", "")):
+            if resolved["trusted"] and is_correct_option(option, resolved["answer"]):
                 run.bold = True
                 run.font.color.rgb = RGBColor(34, 139, 34)
                 paragraph.add_run("  ✅")
         add_question_images_docx(document, question)
+        add_answer_source_docx(document, question)
         add_answer_check_docx(document, question.get("answer_check"))
         add_explanation_docx(document, question.get("explanation"))
         document.add_paragraph(f"解析来源：{explanation_source_label(question)}")
@@ -1084,7 +1295,6 @@ def configure_document_styles(document) -> None:
 def _add_heading(document, text: str, level: int):
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
-    from docx.shared import Pt
 
     heading = document.add_heading(text, level=level)
     for run in heading.runs:
@@ -1105,6 +1315,23 @@ def add_answer_check_docx(document, answer_check: object) -> None:
         return
     add_callout_paragraph(document, "答案可能需要复核")
     add_body_paragraph(document, "这道题的导出答案与模型校验结果存在差异或不确定，详见对应的复核清单。")
+
+
+def add_answer_source_docx(document, question: dict) -> None:
+    resolved = resolve_answer(question)
+    if resolved["source"] == "correct_answer_visible":
+        return
+    add_callout_paragraph(document, "答案来源需要留意")
+    if resolved["trusted"]:
+        add_body_paragraph(
+            document,
+            f"未在页面中读取到标准正确答案，当前答案为{_answer_source_label(resolved['source'])}。",
+        )
+    else:
+        add_body_paragraph(
+            document,
+            "未读取到可靠标准答案，正文不把我的答案当作正确答案，本题需要人工复核。",
+        )
 
 
 def add_question_images_docx(document, question: dict) -> None:
@@ -1135,8 +1362,6 @@ def decode_data_url(value: str) -> bytes:
 
 
 def add_explanation_docx(document, explanation: object) -> None:
-    from docx.shared import Pt, RGBColor
-
     item = normalize_explanation(explanation)
     add_callout_paragraph(document, "解析")
     add_callout_paragraph(document, "为什么选：")

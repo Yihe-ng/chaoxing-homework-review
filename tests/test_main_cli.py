@@ -6,6 +6,18 @@ import main
 
 
 class MainCliTests(unittest.TestCase):
+    def test_run_cli_handles_keyboard_interrupt_without_traceback(self):
+        messages = []
+
+        with (
+            patch("main.main", side_effect=KeyboardInterrupt),
+            patch("builtins.print", lambda *args, **kwargs: messages.append(" ".join(str(arg) for arg in args))),
+        ):
+            exit_code = main.run_cli()
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("用户中断", "\n".join(messages))
+
     def test_confirm_prompt_shows_yes_default_value(self):
         prompts = []
 

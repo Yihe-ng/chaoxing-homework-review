@@ -257,5 +257,14 @@ def run_review_for_course(
     )
 
 
+def run_cli() -> int:
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n用户中断，已退出。重新运行命令可继续。", flush=True)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_cli())

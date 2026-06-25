@@ -2,7 +2,6 @@ import json
 import os
 import tempfile
 import unittest
-from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -281,6 +280,86 @@ class HomeworkReviewTests(unittest.TestCase):
         self.assertIn("展开说明", prompt_text)
         self.assertIn("review_tip", prompt_text)
 
+    def test_zero_score_true_false_uses_inferred_opposite_answer_for_prompt(self):
+        messages = homework_review.build_prompt(
+            {
+                "type": "判断题, 2分",
+                "question": "现代资本主义固有矛盾正在消失。",
+                "options": ["A. 对", "B. 错"],
+                "answer": "对",
+                "student_answer": "对",
+                "correct_answer": "",
+                "score": "0 分",
+                "answer_visibility": "student_answer_only",
+            }
+        )
+        prompt_text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("已知正确答案：错", prompt_text)
+        self.assertIn("由判断题 0 分反推", prompt_text)
+        self.assertNotIn("已知正确答案：对", prompt_text)
+
+    def test_zero_score_multiple_choice_uses_review_prompt_not_standard_answer(self):
+        messages = homework_review.build_prompt(
+            {
+                "type": "多选题, 2分",
+                "question": "资本主义为社会主义所代替的历史必然性表现在( )。",
+                "options": ["A. 内在矛盾", "B. 生产关系调整", "C. 过渡条件", "D. 自我否定"],
+                "answer": "ACD",
+                "student_answer": "ACD",
+                "correct_answer": "",
+                "score": "0 分",
+                "answer_visibility": "student_answer_only",
+            }
+        )
+        prompt_text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("标准答案未确认", prompt_text)
+        self.assertIn("学生答案：ACD", prompt_text)
+        self.assertIn("得分：0 分", prompt_text)
+        self.assertIn("请不要把学生答案当作正确答案", prompt_text)
+        self.assertNotIn("已知正确答案：ACD", prompt_text)
+
+    def test_markdown_does_not_display_untrusted_student_answer_as_answer(self):
+        question = {
+            "courseName": "马克思主义基本原理",
+            "type": "多选题, 2分",
+            "question": "资本主义为社会主义所代替的历史必然性表现在( )。",
+            "options": ["A. 内在矛盾", "B. 生产关系调整", "C. 过渡条件", "D. 自我否定"],
+            "answer": "ACD",
+            "student_answer": "ACD",
+            "correct_answer": "",
+            "score": "0 分",
+            "answer_visibility": "student_answer_only",
+            "explanation": {"correct_reason": "标准答案未确认，本题需要复核。"},
+            "explanation_source": "ai_review",
+        }
+
+        markdown = homework_review.render_markdown([question], "复习资料")
+
+        self.assertIn("> **答案：未确认**", markdown)
+        self.assertIn("> 我的答案：ACD", markdown)
+        self.assertIn("> 得分：0 分", markdown)
+        self.assertNotIn("> **答案：ACD**", markdown)
+        self.assertNotIn("- **A. 内在矛盾** ✅", markdown)
+
+    def test_question_key_changes_when_student_answer_is_not_trusted(self):
+        trusted = {
+            "type": "多选题, 2分",
+            "question": "资本主义为社会主义所代替的历史必然性表现在( )。",
+            "options": ["A. 内在矛盾", "B. 生产关系调整", "C. 过渡条件", "D. 自我否定"],
+            "answer": "ACD",
+            "student_answer": "ACD",
+            "score": "2 分",
+            "answer_visibility": "student_answer_only",
+        }
+        untrusted = {
+            **trusted,
+            "score": "0 分",
+        }
+
+        self.assertNotEqual(homework_review.question_key(trusted), homework_review.question_key(untrusted))
+
     def test_correct_option_matching_does_not_match_substrings(self):
         self.assertFalse(
             homework_review.is_correct_option("A. 侵入式脑机接口", "非侵入式脑机接口")
@@ -337,7 +416,9 @@ class HomeworkReviewTests(unittest.TestCase):
         self.assertIn("题型：单选题", markdown)
         self.assertIn("- A. 选项一", markdown)
         self.assertIn("- B. 选项二", markdown)
-        self.assertIn("导出答案：A", markdown)
+        self.assertIn("解析用答案：A", markdown)
+        self.assertIn("我的答案：A", markdown)
+        self.assertIn("答案来源：学习通导出答案", markdown)
         self.assertIn("模型判断：B", markdown)
         self.assertIn("风险等级：high", markdown)
         self.assertIn("判断状态：disagree", markdown)
@@ -446,8 +527,9 @@ class HomeworkReviewTests(unittest.TestCase):
         )
 
         self.assertIn("只显示我的答案的题？", markdown)
-        self.assertIn("答案来源：student_answer_only", markdown)
-        self.assertIn("导出答案：对", markdown)
+        self.assertIn("解析用答案：未确认", markdown)
+        self.assertIn("我的答案：对", markdown)
+        self.assertIn("答案来源：未确认", markdown)
 
     def test_docx_body_paragraph_helper_applies_indent_and_spacing(self):
         from docx import Document
