@@ -1,6 +1,6 @@
 # Chaoxing Homework Export & Review Assistant
 
-> Collect completed Chaoxing homework, generate AI explanations, output Word + Markdown review docs.
+> Collect completed Chaoxing homework, generate AI explanations, output Word + Markdown review docs, and optionally create quick-recall study cards.
 
 <!-- README-I18N:START -->
 [中文](./README.md) | **English**
@@ -8,7 +8,8 @@
 
 Export completed homework from Chaoxing (超星学习通), generate per-question
 explanations via the DeepSeek API, and output review-ready Word and Markdown
-documents.
+documents. You can also create shorter quick-recall cards for exam cramming,
+keyword review, and self-testing.
 
 Two-stage pipeline:
 
@@ -58,10 +59,15 @@ AI_BASE_URL=https://api.deepseek.com
 AI_MODEL=deepseek-v4-flash
 AI_MAX_TOKENS=2000
 DOCX_FONT=Microsoft YaHei
+MEMORY_CARDS_ENABLED=false
 ```
 
 Set `AI_API_KEY` in `.env`. `DEEPSEEK_API_KEY` and `OPENAI_API_KEY` are also
 supported as fallbacks.
+
+Set `MEMORY_CARDS_ENABLED=true` to generate quick-recall Markdown and DOCX
+files after the full review documents. You can also enable it per run with
+`--memory`.
 
 `CHAOXING_*` variables have built-in defaults and are optional — see
 [Configuration Reference](#configuration-reference).
@@ -109,7 +115,10 @@ login step. If the session expires, rerun `uv run main.py` and log in again.
 | `--course "计算机组成与结构"` | Skip course selection, match by keyword (repeatable) |
 | `--yes` | Skip all interactive prompts, use defaults |
 | `--no-review` | Collect JSON only, without generating review documents |
+| `--review-all` | Generate review docs from every JSON file in the course `raw/` directory |
 | `--verify-answers` | Enable AI answer verification to flag potential errors |
+| `--memory` | Generate quick-recall Markdown and DOCX in addition to review docs |
+| `--no-memory` | Disable quick-recall generation even if `.env` enables it |
 | `--output-dir "my-output"` | Custom output directory (default: `output`) |
 
 **Examples:**
@@ -120,6 +129,9 @@ uv run main.py --course "计算机组成与结构" --yes --verify-answers
 
 # Collect only, no review
 uv run main.py --course "人工智能基础" --no-review
+
+# Collect and generate quick-recall cards
+uv run main.py --course "计算机组成与结构" --yes --memory
 ```
 
 ### Generate Review Docs from Existing JSON
@@ -144,10 +156,33 @@ uv run homework-review "output/人工智能基础/raw" --output-dir "output/人�
 |--------|--------|
 | `--dry-run` | Skip API calls, use placeholders (quick validation) |
 | `--verify-answers` | Let the model independently check exported answers |
+| `--memory` | Generate quick-recall Markdown and DOCX in addition to full review docs |
+| `--no-memory` | Disable quick-recall generation even if `.env` enables it |
+| `--memory-only` | Generate only quick-recall files, usually from `questions.enriched.json` |
 | `--limit N` | Process only the first N questions (for testing) |
 | `--title "Review Notes"` | Custom document title |
 | `--output-dir "path"` | Output directory |
 | `--cache "path"` | Explanation cache file path |
+
+### Generate quick-recall cards only
+
+If you already have `questions.enriched.json`, you can generate only the
+quick-recall cards without rebuilding the full explanations. Use the enriched
+JSON when possible because it already contains questions, answers, and full
+explanations, which improves card quality.
+
+```powershell
+uv run homework-review "output/计算机组成与结构/review/questions.enriched.json" --memory-only --output-dir "output/计算机组成与结构/review" --title "计算机组成与结构"
+```
+
+This writes:
+
+- `计算机组成与结构-速记刷背.md`
+- `计算机组成与结构-速记刷背.docx`
+
+Each card includes the answer, quick cue, plain-language explanation, key
+points, trigger, common trap, self-test prompt, and self-test answer. Formula
+and calculation questions also try to include formulas and steps.
 
 ## Output Structure
 
@@ -162,6 +197,8 @@ output/
     review/                           # Review documents
       计算机组成与结构-完整复习资料.docx  # Word document
       计算机组成与结构-完整复习资料.md    # Markdown document
+      计算机组成与结构-完整复习资料-速记刷背.md
+      计算机组成与结构-完整复习资料-速记刷背.docx
       questions.enriched.json         # Enriched JSON with explanations
       explanations.cache.json         # Explanation cache (reused on reruns)
       review-needed.md                # Questions flagged for manual review
@@ -176,6 +213,7 @@ output/
 | `questions.enriched.json` | Structured question data with full AI explanations |
 | `explanations.cache.json` | Cache reused across runs to save API costs |
 | `review-needed.md` | Questions whose answers may be incorrect, with model assessment |
+| `*-速记刷背.md` / `*-速记刷背.docx` | Quick-recall cards with answers, cues, plain explanations, traps, and self-tests |
 
 **AI explanation fields:**
 
@@ -199,6 +237,7 @@ output/
 | `AI_THINKING` | `disabled` | DeepSeek thinking mode |
 | `DOCX_FONT` | `Microsoft YaHei` | Word document font |
 | `VERIFY_ANSWERS` | `false` | Whether to independently verify exported answers (overridable via `--verify-answers`) |
+| `MEMORY_CARDS_ENABLED` | `false` | Whether to generate quick-recall cards by default (overridable via `--memory` / `--no-memory`) |
 | `CHAOXING_STATE_PATH` | `.local/chaoxing_state.json` | Login state file |
 | `CHAOXING_HEADLESS` | `false` | Run browser in headless mode |
 | `CHAOXING_OUTPUT_DIR` | `output` | Collection output root |

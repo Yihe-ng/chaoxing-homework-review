@@ -1,3 +1,5 @@
+import argparse
+import inspect
 import json
 import os
 import tempfile
@@ -359,6 +361,402 @@ class HomeworkReviewTests(unittest.TestCase):
         }
 
         self.assertNotEqual(homework_review.question_key(trusted), homework_review.question_key(untrusted))
+
+    def test_parse_memory_card_json_normalizes_optional_fields(self):
+        raw = json.dumps(
+            {
+                "one_liner": "主机 = CPU + 主存",
+                "plain_explain": "主机就是计算机内部负责处理和直接存放当前数据的核心部分。",
+                "points": ["主机", "CPU", "主存"],
+                "cue": "看到 ALU + 控制单元 + 主存，选主机。",
+                "trap": "CPU 不包含主存。",
+                "self_test": "CPU、主机、外设分别包含什么？",
+                "self_test_answer": "CPU 包含运算器和控制器；主机包含 CPU 和主存；外设是主机外部设备。",
+                "formula": "",
+                "steps": ["先找 CPU", "再看是否包含主存"],
+            },
+            ensure_ascii=False,
+        )
+
+        card = homework_review.parse_memory_card_response(raw)
+
+        self.assertEqual(card["one_liner"], "主机 = CPU + 主存")
+        self.assertIn("主机就是", card["plain_explain"])
+        self.assertEqual(card["points"], ["主机", "CPU", "主存"])
+        self.assertIn("主机包含 CPU", card["self_test_answer"])
+        self.assertEqual(card["steps"], ["先找 CPU", "再看是否包含主存"])
+
+    def test_memory_card_quality_flags_missing_beginner_fields(self):
+        quality = homework_review.memory_card_quality(
+            {
+                "type": "单选题",
+                "question": "CPU是指（ ）",
+                "options": ["A. 控制器", "B. 运算器和控制器"],
+                "answer": "B",
+                "memory_card": {
+                    "one_liner": "CPU=运算器+控制器",
+                    "points": ["CPU"],
+                    "cue": "看到CPU组成 -> 运算器+控制器",
+                    "trap": "CPU不含主存",
+                    "self_test": "CPU由哪两部分组成？",
+                },
+            }
+        )
+
+        self.assertFalse(quality["passed"])
+        self.assertIn("missing_plain_explain", quality["issues"])
+        self.assertIn("missing_self_test_answer", quality["issues"])
+
+    def test_memory_card_quality_does_not_require_formula_for_bus_category_question(self):
+        quality = homework_review.memory_card_quality(
+            {
+                "type": "单选题",
+                "question": "系统总线中的数据线、地址线和控制线是根据（ ）来划分的。",
+                "answer": "C",
+                "memory_card": {
+                    "one_liner": "按传输内容划分",
+                    "plain_explain": "三类线分别传数据、地址和控制信号，所以按传输内容划分。",
+                    "points": ["数据线", "地址线", "控制线"],
+                    "cue": "看到三类线 -> 看传输内容",
+                    "trap": "不要选传输方向",
+                    "self_test": "三类线按什么划分？",
+                    "self_test_answer": "按传输内容划分。",
+                },
+            }
+        )
+
+        self.assertTrue(quality["passed"])
+        self.assertNotIn("calculation_missing_formula_or_steps", quality["issues"])
+
+    def test_memory_card_quality_flags_calculation_self_test_with_new_numbers(self):
+        quality = homework_review.memory_card_quality(
+            {
+                "type": "单选题",
+                "question": "一个16Kx32位的存储器,其地址线和数据线的总和是",
+                "answer": "46",
+                "memory_card": {
+                    "one_liner": "16K×32位：地址14+数据32=46",
+                    "plain_explain": "16K 表示 2^14 个单元，所以地址线14根；字长32位，所以数据线32根。",
+                    "points": ["地址线", "数据线"],
+                    "steps": ["16K=2^14", "14+32=46"],
+                    "cue": "看到16Kx32位 -> 14+32",
+                    "trap": "不要把K当16",
+                    "self_test": "一个64Kx16位的存储器，地址线和数据线总和是多少？",
+                    "self_test_answer": "32",
+                },
+            }
+        )
+
+        self.assertFalse(quality["passed"])
+        self.assertIn("self_test_introduces_new_numbers", quality["issues"])
+
+    def test_format_math_text_uses_unicode_for_mobile_and_docx_compatibility(self):
+        formatted = homework_review.format_math_text(
+            "16Kx32位：log2(16K)=14，因为2^14=16384，T/m -> 启动间隔，a>=b"
+        )
+
+        self.assertEqual(
+            formatted,
+            "16K×32位：log₂(16K)=14，因为2¹⁴=16384，T/m → 启动间隔，a≥b",
+        )
+
+    def test_memory_card_prompt_uses_resolved_answer_and_explanation(self):
+        messages = homework_review.build_memory_card_prompt(
+            {
+                "type": "单选题",
+                "question": "ALU、控制单元及主存储器合称为（ ）",
+                "options": ["A. CPU", "B. 主机"],
+                "answer": "B",
+                "explanation": {
+                    "correct_reason": "主机包括 CPU 和主存。",
+                    "knowledge_points": ["主机=CPU+主存"],
+                    "principles": ["CPU 不包含主存"],
+                },
+            }
+        )
+        prompt_text = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("可信答案：B", prompt_text)
+        self.assertIn("主机包括 CPU 和主存", prompt_text)
+        self.assertIn("one_liner", prompt_text)
+        self.assertIn("plain_explain", prompt_text)
+        self.assertIn("self_test_answer", prompt_text)
+        self.assertIn("formula", prompt_text)
+        self.assertIn("steps", prompt_text)
+
+    def test_enrich_memory_cards_uses_cache_and_generates_missing_cards(self):
+        generated_payload = json.dumps(
+            {
+                "one_liner": "主机=CPU+主存",
+                "plain_explain": "主机就是 CPU 加上直接参与运行的主存。",
+                "points": ["主机"],
+                "cue": "看到主存一起出现，选主机。",
+                "trap": "CPU 不含主存。",
+                "self_test": "主机包含什么？",
+                "self_test_answer": "主机包含 CPU 和主存。",
+            },
+            ensure_ascii=False,
+        )
+        questions = [
+            {
+                "type": "单选题",
+                "question": "主机包含什么？",
+                "options": ["A. CPU", "B. CPU和主存"],
+                "answer": "B",
+                "explanation": {"correct_reason": "主机包括 CPU 和主存。"},
+            }
+        ]
+        writes = []
+
+        enriched = homework_review.enrich_memory_cards(
+            questions,
+            client=lambda messages: generated_payload,
+            cache={},
+            cache_writer=lambda cache, processed: writes.append((cache, processed)),
+            logger=lambda _: None,
+        )
+
+        self.assertEqual(enriched[0]["memory_card"]["one_liner"], "主机=CPU+主存")
+        self.assertEqual(enriched[0]["memory_card_source"], "ai")
+        self.assertTrue(enriched[0]["memory_card_quality"]["passed"])
+        self.assertTrue(writes)
+        cached = writes[-1][0][homework_review.question_key(enriched[0])]
+        self.assertEqual(cached["memory_card"]["cue"], "看到主存一起出现，选主机。")
+        self.assertEqual(cached["memory_card"]["self_test_answer"], "主机包含 CPU 和主存。")
+
+    def test_render_memory_markdown_includes_compact_cards(self):
+        markdown = homework_review.render_memory_markdown(
+            [
+                {
+                    "courseName": "计算机组成与结构",
+                    "homeworkTitle": "第一章作业",
+                    "type": "单选题",
+                    "question": "ALU、控制单元及主存储器合称为（ ）",
+                    "answer": "B",
+                    "options": ["A. CPU", "B. 主机", "C. 外设"],
+                    "memory_card": {
+                        "one_liner": "主机=CPU+主存",
+                        "plain_explain": "主机就是 CPU 加上主存，是计算机内部处理当前任务的核心。",
+                        "points": ["主机", "CPU", "主存"],
+                        "formula": "地址线数=log2(存储单元数)，2^14=16K",
+                        "steps": ["1. ALU+控制单元=CPU", "加上主存=主机"],
+                        "cue": "看到 ALU + 控制单元 + 主存，选主机。",
+                        "trap": "CPU 不包含主存。",
+                        "self_test": "CPU、主机、外设分别包含什么？",
+                        "self_test_answer": "CPU 包含运算器和控制器；主机包含 CPU 和主存；外设在主机之外。",
+                    },
+                },
+                {
+                    "courseName": "计算机组成与结构",
+                    "homeworkTitle": "第一章作业",
+                    "type": "多选题",
+                    "question": "CPU 通常包括哪些部件？",
+                    "answer": "AC",
+                    "options": ["A. 运算器", "B. 主存", "C. 控制器"],
+                    "memory_card": {
+                        "one_liner": "CPU=运算器+控制器",
+                    },
+                }
+            ],
+            "计组速记",
+        )
+
+        self.assertIn("# 计组速记", markdown)
+        self.assertIn("## 第一章作业", markdown)
+        self.assertIn("> **答案：B. 主机**", markdown)
+        self.assertIn("> **答案：A. 运算器；C. 控制器**", markdown)
+        self.assertIn("- **速记：** 主机=CPU+主存", markdown)
+        self.assertIn("- **白话：** 主机就是 CPU 加上主存", markdown)
+        self.assertIn("- **考点：** 主机；CPU；主存", markdown)
+        self.assertIn("- **公式：** 地址线数=log₂(存储单元数)，2¹⁴=16K", markdown)
+        self.assertIn("- **步骤：** 1. ALU+控制单元=CPU；2. 加上主存=主机", markdown)
+        self.assertNotIn("1. 1.", markdown)
+        self.assertIn("- **自测：** CPU、主机、外设分别包含什么？", markdown)
+        self.assertIn("- **自测答案：** CPU 包含运算器和控制器", markdown)
+
+    def test_memory_prompt_uses_generic_subject_guidance(self):
+        prompt = homework_review.build_memory_card_prompt(
+            {
+                "courseName": "任意课程",
+                "homeworkTitle": "章节练习",
+                "type": "单选题",
+                "question": "某实验样本容量为16Kx32位，求相关线路总数。",
+                "answer": "B",
+                "options": ["A. 32", "B. 46"],
+                "explanation": {
+                    "correct_reason": "根据题干数字和单位进行计算。",
+                    "knowledge_points": ["单位换算"],
+                    "principles": ["先识别数量级，再套用公式。"],
+                },
+            }
+        )
+        system_text = prompt[0]["content"]
+
+        self.assertNotIn("计组题", system_text)
+        self.assertNotIn("政治理论题", system_text)
+        self.assertIn("概念类题", system_text)
+        self.assertIn("计算题", system_text)
+
+    def test_memory_quality_flags_general_calculation_without_course_keywords(self):
+        source = inspect.getsource(homework_review._is_calculation_like_question)
+        for term in ["KB", "MB", "GB", "MHz", "位", "字节", "容量", "带宽", "周期"]:
+            self.assertNotIn(term, source)
+
+        quality = homework_review.memory_card_quality(
+            {
+                "question": "某实验样本容量为16Kx32位，求相关线路总数。",
+                "memory_card": {
+                    "one_liner": "线路总数要先换算容量",
+                    "plain_explain": "16Kx32位表示有16K个单元，每个单元宽度为32位。",
+                    "points": ["容量换算", "线路总数"],
+                    "cue": "看到16Kx32位，先换算16K。",
+                    "trap": "不要把K直接当成16。",
+                    "self_test": "16Kx32位应先换算哪一部分？",
+                    "self_test_answer": "先把16K换算成2¹⁴。",
+                },
+            }
+        )
+
+        self.assertIn("calculation_missing_formula_or_steps", quality["issues"])
+
+    def test_memory_quality_does_not_hardcode_sample_ocr_terms(self):
+        source = inspect.getsource(homework_review.memory_card_quality)
+        source += inspect.getsource(homework_review._has_possible_ocr_noise)
+        source += inspect.getsource(homework_review._is_calculation_like_question)
+
+        for term in ["RAN", "I6MB", "I28K", "苏片", "写人", "面言", "输人"]:
+            self.assertNotIn(term, source)
+
+        quality = homework_review.memory_card_quality(
+            {
+                "question": "某设备采用1/0方式传送数据。",
+                "memory_card": {
+                    "one_liner": "传送方式需辨析",
+                    "plain_explain": "题干里的1/0可能是I/O识别错误，要先核对原题。",
+                    "points": ["输入输出", "传送方式"],
+                    "cue": "看到异常字符组合，先复核原题。",
+                    "trap": "不要直接按错误字符理解题目。",
+                    "self_test": "看到1/0时应该先做什么？",
+                    "self_test_answer": "先核对是否为I/O的识别错误。",
+                },
+            }
+        )
+
+        self.assertIn("possible_ocr_noise", quality["issues"])
+
+    def test_write_memory_docx_uses_readable_card_layout(self):
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "memory.docx"
+
+            homework_review.write_memory_docx(
+                [
+                    {
+                        "courseName": "计算机组成与结构",
+                        "homeworkTitle": "第四章存储器作业",
+                        "type": "单选题",
+                        "question": "一个16Kx32位的存储器,其地址线和数据线的总和是",
+                        "answer": "B",
+                        "options": ["A. 36", "B. 46", "C. 48"],
+                        "memory_card": {
+                            "one_liner": "地址线14+数据线32=46",
+                            "plain_explain": "16K 表示 2^14 个存储单元，所以地址线是14根。",
+                            "points": ["地址线", "数据线"],
+                            "formula": "地址线数=log2(存储单元数)",
+                            "steps": ["16K=2^14", "14+32=46"],
+                            "cue": "看到16Kx32位 -> 14+32",
+                            "trap": "不要把K当16",
+                            "self_test": "地址线和数据线总和是多少？",
+                            "self_test_answer": "46",
+                        },
+                    }
+                ],
+                "计组速记",
+                output_path,
+            )
+
+            document = Document(str(output_path))
+            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+            xml = document._element.xml
+
+        self.assertIn("计组速记", text)
+        self.assertIn("答案：B. 46", text)
+        self.assertIn("白话：16K 表示 2¹⁴ 个存储单元", text)
+        self.assertIn("公式：地址线数=log₂(存储单元数)", text)
+        self.assertIn("步骤：1. 16K=2¹⁴；2. 14+32=46", text)
+        self.assertNotIn("\t", text)
+        self.assertIn('w:fill="E8EEF5"', xml)
+
+        self.assertEqual(len(document.tables), 0)
+        memory_paragraph = next(
+            paragraph for paragraph in document.paragraphs if paragraph.text.startswith("白话：")
+        )
+        self.assertLessEqual(memory_paragraph.paragraph_format.left_indent.pt, 16)
+        self.assertIsNone(memory_paragraph.paragraph_format.first_line_indent)
+        self.assertLessEqual(memory_paragraph.paragraph_format.space_after.pt, 5)
+        self.assertGreaterEqual(memory_paragraph.paragraph_format.line_spacing, 1.24)
+        self_test_answer = next(
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.text.startswith("自测答案：")
+        )
+        self.assertFalse(any(run.bold for run in self_test_answer.runs[2:]))
+
+    def test_memory_only_build_reads_enriched_json_and_writes_memory_markdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            enriched_path = root / "questions.enriched.json"
+            output_dir = root / "review"
+            enriched_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "courseName": "计算机组成与结构",
+                            "homeworkTitle": "第一章作业",
+                            "type": "单选题",
+                            "question": "主机包含什么？",
+                            "options": ["A. CPU", "B. CPU和主存"],
+                            "answer": "B",
+                            "explanation": {"correct_reason": "主机包括 CPU 和主存。"},
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                input=str(enriched_path),
+                output_dir=str(output_dir),
+                cache=None,
+                title="计算机组成与结构-速记刷背",
+                dry_run=False,
+                verify_answers=False,
+                limit=None,
+                memory=False,
+                no_memory=False,
+                memory_only=True,
+            )
+
+            result = homework_review.build_outputs(
+                args,
+                memory_client=lambda messages: json.dumps(
+                    {
+                        "one_liner": "主机=CPU+主存",
+                        "points": ["主机"],
+                        "cue": "看到主存一起出现，选主机。",
+                        "trap": "CPU 不含主存。",
+                        "self_test": "主机包含什么？",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+            self.assertEqual(result[0]["memory_card"]["one_liner"], "主机=CPU+主存")
+            self.assertTrue((output_dir / "计算机组成与结构-速记刷背.md").exists())
+            self.assertTrue((output_dir / "计算机组成与结构-速记刷背.docx").exists())
+            saved = json.loads(enriched_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved[0]["memory_card"]["cue"], "看到主存一起出现，选主机。")
 
     def test_correct_option_matching_does_not_match_substrings(self):
         self.assertFalse(

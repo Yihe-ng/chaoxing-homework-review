@@ -26,6 +26,9 @@ DEFAULT_API_USER_AGENT = "ChaoxingHomeworkReview/0.1 OpenAI-Compatible-Client"
 QUESTION_FONT_SIZE_PT = 13
 CALLOUT_FONT_SIZE_PT = 12
 TIP_SHADE = "FFF4D6"
+MEMORY_ANSWER_SHADE = "E8EEF5"
+MEMORY_NOTE_SHADE = "F7F2E8"
+MEMORY_ACCENT_COLOR = "5B7DB8"
 LINE_COLOR = "000000"
 
 
@@ -50,6 +53,46 @@ def normalize_answer(answer: object) -> str:
     text = str(answer or "").strip()
     parts = [part.strip() for part in text.split("###") if part.strip()]
     return "；".join(parts) if parts else text
+
+
+def format_answer_with_option_text(answer: object, options: list[str]) -> str:
+    text = normalize_answer(answer)
+    option_map: dict[str, str] = {}
+    for option in options:
+        normalized = normalize_option(option)
+        match = re.match(r"^([A-Z])\.\s*\S+", normalized)
+        if match:
+            option_map[match.group(1)] = normalized
+    if not text or not option_map:
+        return text
+
+    normalized_parts = [
+        normalize_option(part)
+        for part in re.split(r"[；;]\s*", text)
+        if part.strip()
+    ]
+    if normalized_parts and all(
+        re.match(r"^[A-Z]\.\s*\S+", part) for part in normalized_parts
+    ):
+        return "；".join(normalized_parts)
+
+    compact = re.sub(r"[\s；;、,，/]+", "", text).upper()
+    if (
+        compact
+        and re.fullmatch(r"[A-Z]+", compact)
+        and all(label in option_map for label in compact)
+    ):
+        return "；".join(option_map[label] for label in compact)
+
+    labels = [
+        part.strip().upper().rstrip(".．、")
+        for part in re.split(r"[\s；;、,，/]+", text)
+        if part.strip()
+    ]
+    if labels and all(re.fullmatch(r"[A-Z]", label) and label in option_map for label in labels):
+        return "；".join(option_map[label] for label in labels)
+
+    return text
 
 
 def resolve_answer(question: dict) -> dict:
@@ -143,8 +186,8 @@ def _opposite_true_false_answer(answer: str, options: list[str]) -> str:
 def normalize_question(raw: dict, meta: dict | None = None, source_file: str = "") -> dict:
     meta = meta or {}
     question = dict(raw)
-    # TODO: When real Chaoxing samples with platform explanations are available,
-    # map analysis/platform_analysis into explanation so review can reuse it.
+    # TODO: 后续拿到带平台解析的真实学习通样本后，
+    # 将 analysis/platform_analysis 映射到 explanation 以便复习资料复用。
     question["courseName"] = question.get("courseName") or meta.get("courseName", "")
     question["homeworkTitle"] = meta.get("homeworkTitle", "")
     if source_file:
@@ -723,6 +766,274 @@ def _confidence_value(value: object) -> float:
     return max(0.0, min(1.0, confidence))
 
 
+def memory_enabled_from_args(args: argparse.Namespace) -> bool:
+    if getattr(args, "memory", False):
+        return True
+    if getattr(args, "no_memory", False):
+        return False
+    return env_flag("MEMORY_CARDS_ENABLED", False)
+
+
+def normalize_memory_card(value: object) -> dict:
+    if not isinstance(value, dict):
+        value = {}
+    return {
+        "one_liner": str(value.get("one_liner", "")).strip(),
+        "plain_explain": str(value.get("plain_explain", "")).strip(),
+        "points": _string_list(value.get("points", [])),
+        "cue": str(value.get("cue", "")).strip(),
+        "trap": str(value.get("trap", "")).strip(),
+        "self_test": str(value.get("self_test", "")).strip(),
+        "self_test_answer": str(value.get("self_test_answer", "")).strip(),
+        "formula": str(value.get("formula", "")).strip(),
+        "steps": _string_list(value.get("steps", [])),
+    }
+
+
+def parse_memory_card_response(content: str) -> dict:
+    return normalize_memory_card(json.loads(content))
+
+
+def _is_calculation_like_question(text: str) -> bool:
+    formula_patterns = [
+        r"\d+\s*[A-Za-z%]*\s*[xX×]\s*\d+",
+        r"\d+\s*(?:[+\-*/^=]|>=|<=)\s*\d+",
+        r"(?i)\blog\s*2\b",
+    ]
+    return any(re.search(pattern, text) for pattern in formula_patterns)
+
+
+def _has_possible_ocr_noise(text: str) -> bool:
+    patterns = [
+        r"(?<!\d)1/0(?!\d)",
+        r"(?<![A-Za-z])I(?=\d)",
+        r"(?<=\d)I(?=\d|[KMG]?B|位)",
+    ]
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _number_tokens(text: str) -> set[str]:
+    return {match.upper().replace("×", "X") for match in re.findall(r"\d+\s*[KMG]?", text)}
+
+
+SUPERSCRIPT_TRANS = str.maketrans("0123456789+-()", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁽⁾")
+SUBSCRIPT_TRANS = str.maketrans("0123456789+-()", "₀₁₂₃₄₅₆₇₈₉₊₋₍₎")
+
+
+def format_math_text(text: object) -> str:
+    formatted = str(text or "")
+    formatted = re.sub(
+        r"(?i)\blog\s*2\b",
+        "log₂",
+        formatted,
+    )
+    formatted = re.sub(
+        r"(?i)(\d+\s*[KMGT]?)\s*[x]\s*(\d+)",
+        lambda match: f"{match.group(1).replace(' ', '')}×{match.group(2)}",
+        formatted,
+    )
+    formatted = re.sub(
+        r"(?<=\d)\s*\*\s*(?=\d)",
+        "×",
+        formatted,
+    )
+    formatted = re.sub(
+        r"(?<![A-Za-z0-9_])([A-Za-z0-9]+)\^([0-9+\-()]+)",
+        lambda match: f"{match.group(1)}{match.group(2).translate(SUPERSCRIPT_TRANS)}",
+        formatted,
+    )
+    formatted = formatted.replace(">=", "≥").replace("<=", "≤").replace("!=", "≠")
+    formatted = formatted.replace("->", "→")
+    return formatted
+
+
+def memory_card_quality(question: dict) -> dict:
+    card = normalize_memory_card(question.get("memory_card"))
+    issues: list[str] = []
+    required_fields = {
+        "one_liner": "missing_one_liner",
+        "plain_explain": "missing_plain_explain",
+        "cue": "missing_cue",
+        "trap": "missing_trap",
+        "self_test": "missing_self_test",
+        "self_test_answer": "missing_self_test_answer",
+    }
+    for field, issue in required_fields.items():
+        if not card[field]:
+            issues.append(issue)
+    if not card["points"]:
+        issues.append("missing_points")
+    if card["plain_explain"] and len(card["plain_explain"]) < 12:
+        issues.append("plain_explain_too_short")
+    if card["plain_explain"] and card["plain_explain"] == card["one_liner"]:
+        issues.append("plain_explain_repeats_one_liner")
+    if card["self_test_answer"] and card["self_test_answer"] == card["self_test"]:
+        issues.append("self_test_answer_repeats_question")
+    question_text = str(question.get("question", ""))
+    if _is_calculation_like_question(question_text):
+        if not card["formula"] and not card["steps"]:
+            issues.append("calculation_missing_formula_or_steps")
+        question_numbers = _number_tokens(question_text)
+        self_test_numbers = _number_tokens(card["self_test"])
+        if self_test_numbers and not self_test_numbers.issubset(question_numbers):
+            issues.append("self_test_introduces_new_numbers")
+    suspicious = ["待补充", "无法判断", "不确定", "生成失败"]
+    combined = " ".join(
+        [
+            card["one_liner"],
+            card["plain_explain"],
+            card["cue"],
+            card["trap"],
+            card["self_test"],
+            card["self_test_answer"],
+        ]
+    )
+    if any(token in combined for token in suspicious):
+        issues.append("contains_uncertain_or_failed_text")
+    if _has_possible_ocr_noise(question_text):
+        issues.append("possible_ocr_noise")
+    return {"passed": not issues, "issues": issues}
+
+
+def format_memory_steps(steps: list[str]) -> str:
+    parts = []
+    for index, step in enumerate(steps, 1):
+        text = str(step).strip()
+        if not text:
+            continue
+        text = format_math_text(text)
+        if re.match(r"^\d+[.．、]\s*", text):
+            parts.append(text)
+        else:
+            parts.append(f"{index}. {text}")
+    return "；".join(parts)
+
+
+def build_memory_card_prompt(question: dict) -> list[dict]:
+    resolved = resolve_answer(question)
+    options = "\n".join(question.get("options", [])) or "无"
+    explanation = normalize_explanation(question.get("explanation"))
+    answer_line = (
+        f"可信答案：{resolved['answer']}\n答案依据：{_answer_source_label(resolved['source'])}"
+        if resolved["trusted"]
+        else (
+            "可信答案：未确认\n"
+            f"我的答案：{normalize_answer(question.get('student_answer') or question.get('answer', '')) or '未读取到'}\n"
+            f"得分：{question.get('score', '') or '未读取到'}"
+        )
+    )
+    user = f"""题型：{question.get("type", "")}
+题目：{question.get("question", "")}
+选项：
+{options}
+{answer_line}
+
+已有解析摘要：{explanation.get("correct_reason", "")}
+已有知识点：{"；".join(explanation.get("knowledge_points", []))}
+已有判断原则：{"；".join(explanation.get("principles", []))}
+
+请生成考前快速刷背用的速记卡，并严格输出 json。{image_prompt_note(question)}"""
+    images = prompt_images(question)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是考前刷背卡片生成器。请把完整解析压缩成短、准、可检索的记忆卡。"
+                "必须只输出合法 json，不要输出 Markdown。json 格式："
+                '{"one_liner":"不超过20字的一句话速记",'
+                '"plain_explain":"一句给没学过的人看的白话解释，必须解释术语，不能只复述题干",'
+                '"points":["1到3个考点关键词"],'
+                '"cue":"看到什么关键词或结构 -> 怎么判断",'
+                '"trap":"最容易误判的点",'
+                '"self_test":"闭卷自测问题",'
+                '"self_test_answer":"自测题的参考答案，必须能直接回答 self_test",'
+                '"formula":"公式或固定换算，没有则留空",'
+                '"steps":["计算题或流程题的步骤，没有则为空数组"]}。'
+                "概念类题优先写术语边界、包含关系和排除干扰；"
+                "计算题或流程题优先写公式、固定结论、单位换算和步骤模板；"
+                "理论辨析题优先写关键词触发、限定词、绝对化表述和易混概念。"
+                "plain_explain 要面向零基础，说明概念是什么；"
+                "self_test 默认围绕本题核心结论提问，不要改题目数字另造新题；"
+                "self_test_answer 必须给出答案，不能留空。"
+                "如果可信答案未确认，one_liner 必须提示“待复核”，不要把学生答案写成正确答案。"
+            ),
+        },
+        {"role": "user", "content": build_user_content(user, images)},
+    ]
+
+
+def enrich_memory_cards(
+    questions: Iterable[dict],
+    client: Callable[[list[dict]], str] = call_chat_completion,
+    cache: dict[str, dict] | None = None,
+    dry_run: bool = False,
+    cache_writer: Callable[[dict[str, dict], list[dict]], None] | None = None,
+    logger: Callable[[str], None] = print,
+) -> list[dict]:
+    cache = cache or {}
+    enriched: list[dict] = []
+    question_list = list(questions)
+    total = len(question_list)
+    try:
+        for index, question in enumerate(question_list, 1):
+            item = dict(question)
+            key = question_key(item)
+            cached = cache.get(key, {})
+            if item.get("memory_card"):
+                log_progress("使用原速记", index, total, item.get("question", ""), logger)
+                item["memory_card"] = normalize_memory_card(item["memory_card"])
+                item["memory_card_source"] = item.get("memory_card_source", "existing")
+                item["memory_card_quality"] = memory_card_quality(item)
+            elif cached.get("memory_card") and cached.get("memory_card_source") != "failed":
+                log_progress("使用速记缓存", index, total, item.get("question", ""), logger)
+                item["memory_card"] = normalize_memory_card(cached["memory_card"])
+                item["cached_memory_card_source"] = cached.get("memory_card_source", "unknown")
+                item["memory_card_source"] = "cache"
+                item["memory_card_quality"] = memory_card_quality(item)
+            elif dry_run:
+                log_progress("速记 dry-run", index, total, item.get("question", ""), logger)
+                item["memory_card"] = normalize_memory_card(
+                    {"one_liner": "待生成：dry-run 模式未调用 AI API。"}
+                )
+                item["memory_card_source"] = "missing"
+                item["memory_card_quality"] = memory_card_quality(item)
+            else:
+                log_progress("生成速记", index, total, item.get("question", ""), logger)
+                try:
+                    item["memory_card"] = parse_memory_card_response(
+                        client(build_memory_card_prompt(item))
+                    )
+                    item["memory_card_source"] = (
+                        "ai" if resolve_answer(item)["trusted"] else "ai_review"
+                    )
+                    item["memory_card_quality"] = memory_card_quality(item)
+                    time.sleep(0.3)
+                except Exception as exc:
+                    item["memory_card"] = normalize_memory_card(
+                        {
+                            "one_liner": "速记生成失败，请查看 processing_error 后重试。",
+                            "trap": "本题需要人工补充速记。",
+                        }
+                    )
+                    item["memory_card_source"] = "failed"
+                    item["memory_card_quality"] = memory_card_quality(item)
+                    item["processing_error"] = (
+                        f"{item.get('processing_error', '')}\n速记生成失败：{exc}"
+                    ).strip()
+                    log_progress("速记失败", index, total, item.get("question", ""), logger)
+            enriched.append(item)
+            if cache_writer:
+                cache = update_cache(cache, [item])
+                cache_writer(cache, enriched)
+    except KeyboardInterrupt:
+        logger("\n用户中断，正在保存已生成的速记卡...")
+        if cache_writer:
+            cache = update_cache(cache, enriched)
+            cache_writer(cache, enriched)
+        logger(f"已保存 {len(enriched)} 题速记卡，重新运行可继续补全。")
+    return enriched
+
+
 def enrich_questions(
     questions: Iterable[dict],
     client: Callable[[list[dict]], str] = call_chat_completion,
@@ -869,17 +1180,27 @@ def enrich_questions(
 def update_cache(cache: dict[str, dict], questions: Iterable[dict]) -> dict[str, dict]:
     updated = dict(cache)
     for question in questions:
+        key = question_key(question)
+        cached_question = dict(updated.get(key, {}))
         if question.get("explanation") and question.get("explanation_source") not in ("missing", "failed"):
             source = question.get("explanation_source", "ai")
             if source == "cache":
                 source = question.get("cached_explanation_source", "ai")
-            cached_question = {
-                "explanation": normalize_explanation(question["explanation"]),
-                "explanation_source": source,
-            }
+            cached_question["explanation"] = normalize_explanation(question["explanation"])
+            cached_question["explanation_source"] = source
             if question.get("answer_check"):
                 cached_question["answer_check"] = normalize_answer_check(question["answer_check"])
-            updated[question_key(question)] = cached_question
+        if question.get("memory_card") and question.get("memory_card_source") not in (
+            "missing",
+            "failed",
+        ):
+            source = question.get("memory_card_source", "ai")
+            if source == "cache":
+                source = question.get("cached_memory_card_source", "ai")
+            cached_question["memory_card"] = normalize_memory_card(question["memory_card"])
+            cached_question["memory_card_source"] = source
+        if cached_question:
+            updated[key] = cached_question
     return updated
 
 
@@ -996,6 +1317,68 @@ def render_markdown(questions: list[dict], title: str) -> str:
                 "",
             ]
         )
+    return "\n".join(lines).strip() + "\n"
+
+
+def render_memory_markdown(questions: list[dict], title: str) -> str:
+    lines = [f"# {title}", ""]
+    current_course = None
+    current_homework = None
+    for index, question in enumerate(questions, 1):
+        course = question.get("courseName") or "未命名课程"
+        if course != current_course:
+            lines.extend([f"## {course}", ""])
+            current_course = course
+            current_homework = None
+        homework_title = question.get("homeworkTitle", "")
+        if homework_title and homework_title != current_homework:
+            lines.extend([f"## {homework_title}", ""])
+            current_homework = homework_title
+        resolved = resolve_answer(question)
+        card = normalize_memory_card(question.get("memory_card"))
+        lines.extend([f"### {index}. {question.get('question', '')}", ""])
+        if resolved["trusted"]:
+            answer_text = format_answer_with_option_text(
+                resolved["answer"], question.get("options", [])
+            )
+            lines.append(f"> **答案：{format_math_text(answer_text)}**")
+            if resolved["source"] != "correct_answer_visible":
+                lines.append(f"> 来源：{_answer_source_label(resolved['source'])}")
+        else:
+            student_answer = normalize_answer(
+                question.get("student_answer") or question.get("answer", "")
+            )
+            lines.append("> **答案：未确认**")
+            if student_answer:
+                student_answer_text = format_answer_with_option_text(
+                    student_answer, question.get("options", [])
+                )
+                lines.append(f"> 我的答案：{format_math_text(student_answer_text)}")
+            if question.get("score"):
+                lines.append(f"> 得分：{question.get('score')}")
+        lines.append("")
+        if card["one_liner"]:
+            lines.append(f"- **速记：** {format_math_text(card['one_liner'])}")
+        if card["plain_explain"]:
+            lines.append(f"- **白话：** {format_math_text(card['plain_explain'])}")
+        if card["points"]:
+            lines.append(f"- **考点：** {format_math_text('；'.join(card['points']))}")
+        if card["formula"]:
+            lines.append(f"- **公式：** {format_math_text(card['formula'])}")
+        if card["steps"]:
+            lines.append(f"- **步骤：** {format_memory_steps(card['steps'])}")
+        if card["cue"]:
+            lines.append(f"- **抓手：** {format_math_text(card['cue'])}")
+        if card["trap"]:
+            lines.append(f"- **易错：** {format_math_text(card['trap'])}")
+        if card["self_test"]:
+            lines.append(f"- **自测：** {format_math_text(card['self_test'])}")
+        if card["self_test_answer"]:
+            lines.append(f"- **自测答案：** {format_math_text(card['self_test_answer'])}")
+        quality = question.get("memory_card_quality")
+        if quality and not quality.get("passed", True):
+            lines.append(f"- **质量提示：** {'；'.join(quality.get('issues', []))}")
+        lines.extend(["", "---", ""])
     return "\n".join(lines).strip() + "\n"
 
 
@@ -1272,6 +1655,93 @@ def write_docx(questions: list[dict], title: str, output_path: Path) -> None:
     document.save(str(output_path))
 
 
+def write_memory_docx(questions: list[dict], title: str, output_path: Path) -> None:
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+    except ImportError as exc:
+        raise RuntimeError("python-docx is required to write DOCX files.") from exc
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    document = Document()
+    configure_document_styles(document)
+    _add_heading(document, title, 0)
+    current_course = None
+    current_chapter = None
+    for index, question in enumerate(questions, 1):
+        course = question.get("courseName") or "未命名课程"
+        chapter = question.get("homeworkTitle", "")
+        if course != current_course:
+            _add_heading(document, course, 1)
+            current_course = course
+            current_chapter = None
+        if chapter and chapter != current_chapter:
+            _add_heading(document, chapter, 2)
+            current_chapter = chapter
+
+        question_paragraph = document.add_paragraph()
+        question_paragraph.paragraph_format.space_before = Pt(14)
+        question_paragraph.paragraph_format.space_after = Pt(8)
+        question_paragraph.paragraph_format.line_spacing = 1.28
+        question_run = question_paragraph.add_run(f"{index}. {question.get('question', '')}")
+        question_run.bold = True
+        question_run.font.size = Pt(12.5)
+        question_run.font.color.rgb = RGBColor(31, 77, 120)
+
+        for line in _memory_answer_lines(question):
+            add_memory_answer_paragraph(document, line)
+
+        card = normalize_memory_card(question.get("memory_card"))
+        memory_fields = [
+            ("速记", card["one_liner"], True, None),
+            ("白话", card["plain_explain"], False, None),
+            ("考点", "；".join(card["points"]), False, None),
+            ("公式", card["formula"], False, None),
+            ("步骤", format_memory_steps(card["steps"]) if card["steps"] else "", False, None),
+            ("抓手", card["cue"], False, None),
+            ("易错", card["trap"], False, None),
+            ("自测", card["self_test"], False, None),
+            ("自测答案", card["self_test_answer"], False, None),
+        ]
+        quality = question.get("memory_card_quality")
+        if quality and not quality.get("passed", True):
+            memory_fields.append(
+                ("质量提示", "；".join(quality.get("issues", [])), False, MEMORY_NOTE_SHADE)
+            )
+        for label, value, bold_value, fill in memory_fields:
+            add_memory_field_paragraph(
+                document,
+                label,
+                value,
+                bold_value=bold_value,
+                fill=fill,
+            )
+        add_separator(document)
+    document.save(str(output_path))
+
+
+def _memory_answer_lines(question: dict) -> list[str]:
+    resolved = resolve_answer(question)
+    if resolved["trusted"]:
+        answer_text = format_answer_with_option_text(
+            resolved["answer"], question.get("options", [])
+        )
+        lines = [f"答案：{format_math_text(answer_text)}"]
+        if resolved["source"] != "correct_answer_visible":
+            lines.append(f"来源：{_answer_source_label(resolved['source'])}")
+        return lines
+    lines = ["答案：未确认"]
+    student_answer = normalize_answer(question.get("student_answer") or question.get("answer", ""))
+    if student_answer:
+        student_answer_text = format_answer_with_option_text(
+            student_answer, question.get("options", [])
+        )
+        lines.append(f"我的答案：{format_math_text(student_answer_text)}")
+    if question.get("score"):
+        lines.append(f"得分：{question.get('score')}")
+    return lines
+
+
 def configure_document_styles(document) -> None:
     from docx.shared import Pt
     from docx.oxml.ns import qn
@@ -1283,7 +1753,7 @@ def configure_document_styles(document) -> None:
     normal.font.size = Pt(10.5)
     normal.paragraph_format.space_after = Pt(8)
     normal.paragraph_format.line_spacing = 1.15
-    for style_name in ("Title", "Heading 1", "Heading 2"):
+    for style_name in ("Title", "Heading 1", "Heading 2", "Heading 3"):
         try:
             style = document.styles[style_name]
             style.font.name = font_name
@@ -1415,6 +1885,97 @@ def add_list_paragraph(document, text: str):
     return paragraph
 
 
+def add_memory_answer_paragraph(document, text: str):
+    from docx.shared import Pt, RGBColor
+
+    paragraph = document.add_paragraph()
+    paragraph.paragraph_format.left_indent = Pt(8)
+    paragraph.paragraph_format.space_before = Pt(3)
+    paragraph.paragraph_format.space_after = Pt(8)
+    paragraph.paragraph_format.line_spacing = 1.28
+    run = paragraph.add_run(text)
+    run.bold = True
+    run.font.size = Pt(CALLOUT_FONT_SIZE_PT)
+    run.font.color.rgb = RGBColor(31, 58, 95)
+    shade_paragraph(paragraph, MEMORY_ANSWER_SHADE)
+    add_left_border(paragraph, MEMORY_ACCENT_COLOR)
+    return paragraph
+
+
+def add_memory_fields_table(document, fields: list[tuple[str, str, bool, str | None]]):
+    from docx.shared import Inches, Pt, RGBColor
+
+    rows = [
+        (label, format_math_text(value), bold_value, fill)
+        for label, value, bold_value, fill in fields
+        if format_math_text(value)
+    ]
+    if not rows:
+        return None
+    table = document.add_table(rows=len(rows), cols=2)
+    table.autofit = False
+    remove_table_borders(table)
+    for row, (label, value, bold_value, fill) in zip(table.rows, rows, strict=True):
+        label_cell, value_cell = row.cells
+        label_cell.width = Inches(0.78)
+        value_cell.width = Inches(5.55)
+        set_cell_margins(label_cell, top=45, bottom=45, start=0, end=80)
+        set_cell_margins(value_cell, top=45, bottom=45, start=20, end=0)
+        if fill:
+            shade_cell(label_cell, fill)
+            shade_cell(value_cell, fill)
+
+        label_paragraph = label_cell.paragraphs[0]
+        label_paragraph.paragraph_format.space_after = Pt(5)
+        label_paragraph.paragraph_format.line_spacing = 1.35
+        label_run = label_paragraph.add_run(f"{label}：")
+        label_run.bold = True
+        label_run.font.size = Pt(10.5)
+        label_run.font.color.rgb = RGBColor(176, 90, 107)
+
+        value_paragraph = value_cell.paragraphs[0]
+        value_paragraph.paragraph_format.space_after = Pt(5)
+        value_paragraph.paragraph_format.line_spacing = 1.35
+        value_run = value_paragraph.add_run(value)
+        value_run.bold = bold_value
+        value_run.font.size = Pt(10.5)
+        value_run.font.color.rgb = RGBColor(33, 37, 41)
+    spacer = document.add_paragraph()
+    spacer.paragraph_format.space_after = Pt(4)
+    return table
+
+
+def add_memory_field_paragraph(
+    document,
+    label: str,
+    value: str,
+    *,
+    bold_value: bool = False,
+    fill: str | None = None,
+):
+    from docx.shared import Pt, RGBColor
+
+    text = format_math_text(value)
+    if not text:
+        return None
+    paragraph = document.add_paragraph()
+    paragraph.paragraph_format.left_indent = Pt(12)
+    paragraph.paragraph_format.space_after = Pt(4.5)
+    paragraph.paragraph_format.line_spacing = 1.24
+    label_run = paragraph.add_run(f"{label}：")
+    label_run.bold = True
+    label_run.font.size = Pt(10.5)
+    label_run.font.color.rgb = RGBColor(176, 90, 107)
+    value_run = paragraph.add_run(text)
+    value_run.bold = bold_value
+    value_run.font.size = Pt(10.5)
+    value_run.font.color.rgb = RGBColor(33, 37, 41)
+    if fill:
+        shade_paragraph(paragraph, fill)
+        add_left_border(paragraph, "C8A24A")
+    return paragraph
+
+
 def shade_paragraph(paragraph, fill: str) -> None:
     from docx.oxml import parse_xml
     from docx.oxml.ns import nsdecls
@@ -1422,6 +1983,70 @@ def shade_paragraph(paragraph, fill: str) -> None:
     paragraph._p.get_or_add_pPr().append(
         parse_xml(f'<w:shd {nsdecls("w")} w:fill="{escape(fill)}"/>')
     )
+
+
+def shade_cell(cell, fill: str) -> None:
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    cell._tc.get_or_add_tcPr().append(
+        parse_xml(f'<w:shd {nsdecls("w")} w:fill="{escape(fill)}"/>')
+    )
+
+
+def remove_table_borders(table) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tbl_pr = table._tbl.tblPr
+    borders = tbl_pr.first_child_found_in("w:tblBorders")
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        tbl_pr.append(borders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        element = borders.find(qn(f"w:{edge}"))
+        if element is None:
+            element = OxmlElement(f"w:{edge}")
+            borders.append(element)
+        element.set(qn("w:val"), "nil")
+
+
+def set_cell_margins(cell, *, top: int, bottom: int, start: int, end: int) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tc_pr = cell._tc.get_or_add_tcPr()
+    margins = tc_pr.first_child_found_in("w:tcMar")
+    if margins is None:
+        margins = OxmlElement("w:tcMar")
+        tc_pr.append(margins)
+    for key, value in {
+        "top": top,
+        "bottom": bottom,
+        "start": start,
+        "end": end,
+    }.items():
+        node = margins.find(qn(f"w:{key}"))
+        if node is None:
+            node = OxmlElement(f"w:{key}")
+            margins.append(node)
+        node.set(qn("w:w"), str(value))
+        node.set(qn("w:type"), "dxa")
+
+
+def add_left_border(paragraph, color: str) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    p_pr = paragraph._p.get_or_add_pPr()
+    borders = OxmlElement("w:pBdr")
+    left = OxmlElement("w:left")
+    left.set(qn("w:val"), "single")
+    left.set(qn("w:sz"), "16")
+    left.set(qn("w:space"), "6")
+    left.set(qn("w:color"), color)
+    borders.append(left)
+    p_pr.append(borders)
 
 
 def add_separator(document) -> None:
@@ -1440,7 +2065,37 @@ def add_separator(document) -> None:
     p_pr.append(borders)
 
 
-def build_outputs(args: argparse.Namespace) -> list[dict]:
+def load_enriched_questions(path: Path) -> list[dict]:
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    questions = data if isinstance(data, list) else data.get("questions", [])
+    return [dict(question) for question in questions]
+
+
+def _memory_progress_path(input_path: Path, output_dir: Path) -> Path:
+    if input_path.name.endswith(".enriched.json"):
+        return input_path
+    return output_dir / "questions.enriched.json"
+
+
+def _write_memory_markdown(output_dir: Path, title: str, questions: list[dict]) -> Path:
+    memory_title = title if title.endswith("速记刷背") else f"{title}-速记刷背"
+    path = output_dir / f"{memory_title}.md"
+    path.write_text(render_memory_markdown(questions, memory_title), encoding="utf-8")
+    return path
+
+
+def _write_memory_docx(output_dir: Path, title: str, questions: list[dict]) -> Path:
+    memory_title = title if title.endswith("速记刷背") else f"{title}-速记刷背"
+    path = output_dir / f"{memory_title}.docx"
+    write_memory_docx(questions, memory_title, path)
+    return path
+
+
+def build_outputs(
+    args: argparse.Namespace,
+    *,
+    memory_client: Callable[[list[dict]], str] = call_chat_completion,
+) -> list[dict]:
     input_path = Path(args.input)
     output_dir = Path(args.output_dir)
     title = args.title or input_path.name or "学习通作业复习资料"
@@ -1451,11 +2106,44 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
     if args.verify_answers is None:
         args.verify_answers = env_flag("VERIFY_ANSWERS", False)
 
+    memory_enabled = memory_enabled_from_args(args)
+    memory_only = bool(getattr(args, "memory_only", False))
     model = os.getenv("AI_MODEL") or "deepseek-v4-flash"
     vision = "开启" if env_flag("AI_VISION_ENABLED") else "关闭"
     verify = "开启" if args.verify_answers else "关闭"
+    memory_label = "开启" if memory_enabled or memory_only else "关闭"
     font = os.getenv("DOCX_FONT") or "Microsoft YaHei"
-    print(f"[info] 模型：{model}  |  图片识别：{vision}  |  答案校验：{verify}  |  文档字体：{font}", flush=True)
+    print(
+        f"[info] 模型：{model}  |  图片识别：{vision}  |  答案校验：{verify}  |  速记卡：{memory_label}  |  文档字体：{font}",
+        flush=True,
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if memory_only:
+        questions = load_enriched_questions(input_path) if input_path.name.endswith(".enriched.json") else load_questions(input_path)
+        questions = apply_limit(questions, args.limit)
+        cache = load_cache(cache_path)
+        progress_path = _memory_progress_path(input_path, output_dir)
+
+        def write_memory_progress(progress_cache: dict[str, dict], processed: list[dict]) -> None:
+            save_json(cache_path, progress_cache)
+            save_json(progress_path, processed)
+
+        enriched = enrich_memory_cards(
+            questions,
+            client=memory_client,
+            cache=cache,
+            dry_run=args.dry_run,
+            cache_writer=write_memory_progress,
+        )
+        cache = update_cache(cache, enriched)
+        save_json(cache_path, cache)
+        save_json(progress_path, enriched)
+        memory_path = _write_memory_markdown(output_dir, title, enriched)
+        memory_docx_path = _write_memory_docx(output_dir, title, enriched)
+        print(f"- 速记刷背：{memory_path}", flush=True)
+        print(f"- 速记刷背 DOCX：{memory_docx_path}", flush=True)
+        return enriched
 
     questions = load_questions(input_path)
     questions = apply_limit(questions, args.limit)
@@ -1481,10 +2169,19 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
         cache_writer=write_progress_cache,
         on_consecutive_failures=on_consecutive_failures,
     )
+    cache = update_cache(cache, enriched)
+    if memory_enabled:
+        enriched = enrich_memory_cards(
+            enriched,
+            client=memory_client,
+            cache=cache,
+            dry_run=args.dry_run,
+            cache_writer=write_progress_cache,
+        )
+        cache = update_cache(cache, enriched)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     save_json(output_dir / "questions.enriched.json", enriched)
-    save_json(cache_path, update_cache(cache, enriched))
+    save_json(cache_path, cache)
     (output_dir / "review-needed.md").write_text(
         render_review_needed_markdown(enriched, f"{title}-需复核题目"),
         encoding="utf-8",
@@ -1497,6 +2194,8 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
         write_docx(enriched, title, output_dir / f"{title}.docx")
     except PermissionError:
         docx_failed = True
+    memory_path = _write_memory_markdown(output_dir, title, enriched) if memory_enabled else None
+    memory_docx_path = _write_memory_docx(output_dir, title, enriched) if memory_enabled else None
     print_run_summary(
         build_run_summary(enriched),
         output_dir,
@@ -1504,6 +2203,10 @@ def build_outputs(args: argparse.Namespace) -> list[dict]:
         docx_failed=docx_failed,
         review_needed_path=output_dir / "review-needed.md",
     )
+    if memory_path:
+        print(f"- 速记刷背：{memory_path}", flush=True)
+    if memory_docx_path:
+        print(f"- 速记刷背 DOCX：{memory_docx_path}", flush=True)
     return enriched
 
 
@@ -1525,6 +2228,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=None,
         help="Ask the model to independently check exported answers and flag risks.",
+    )
+    parser.add_argument(
+        "--memory",
+        action="store_true",
+        help="Generate memory-card Markdown in addition to the full review outputs.",
+    )
+    parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="Disable memory-card generation even if MEMORY_CARDS_ENABLED is true.",
+    )
+    parser.add_argument(
+        "--memory-only",
+        action="store_true",
+        help="Only generate memory-card Markdown from existing JSON/enriched JSON.",
     )
     parser.add_argument(
         "--limit",

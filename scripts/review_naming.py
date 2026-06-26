@@ -63,12 +63,14 @@ def build_review_scope_summary(
         return f"本轮{len(homework_titles)}个作业"
 
     chapters = [_chapter_number(title) for title in non_empty]
-    if all(number is not None for number in chapters):
-        return _chapter_summary([int(number) for number in chapters])
+    chapter_numbers = _all_ints(chapters)
+    if chapter_numbers is not None:
+        return _chapter_summary(chapter_numbers)
 
     rounds = [_round_number(title) for title in non_empty]
-    if all(number is not None for number in rounds):
-        return "_".join(_ordinal(int(number)) for number in rounds) + "作业"
+    round_numbers = _all_ints(rounds)
+    if round_numbers is not None:
+        return "_".join(_ordinal(number) for number in round_numbers) + "作业"
 
     display_titles = [_display_title(title) for title in non_empty]
     if len(display_titles) <= 4:
@@ -104,6 +106,15 @@ def unique_output_stem(review_dir: Path, preferred_stem: str, suffixes: list[str
 
 def _stem_exists(review_dir: Path, stem: str, suffixes: list[str]) -> bool:
     return any((review_dir / f"{stem}{suffix}").exists() for suffix in suffixes)
+
+
+def _all_ints(values: list[int | None]) -> list[int] | None:
+    numbers: list[int] = []
+    for value in values:
+        if value is None:
+            return None
+        numbers.append(value)
+    return numbers
 
 
 def _chapter_number(title: str) -> int | None:

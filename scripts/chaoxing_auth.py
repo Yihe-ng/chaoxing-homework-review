@@ -94,7 +94,7 @@ def _launch_browser(playwright, *, headless: bool):
     ):
         try:
             return playwright.chromium.launch(**kwargs)
-        except Exception as exc:  # pragma: no cover - depends on local browser install.
+        except Exception as exc:  # pragma: no cover - 依赖本机浏览器安装情况。
             errors.append(str(exc).splitlines()[0])
     raise RuntimeError(
         "无法启动 Playwright 浏览器。请运行 `uv run playwright install chromium` 后重试。"

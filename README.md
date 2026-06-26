@@ -1,12 +1,12 @@
 # 超星学习通作业导出解析助手
 
-> 采集超星学习通已完成作业，AI 生成逐题解析，输出 Word + Markdown 复习资料。
+> 采集超星学习通已完成作业，AI 生成逐题解析，输出 Word + Markdown 复习资料，并可额外生成考前速记刷背卡片。
 
 <!-- README-I18N:START -->
 **中文** | [English](./README.en.md)
 <!-- README-I18N:END -->
 
-从超星学习通导出已完成作业，调用 DeepSeek API 生成逐题解析，最终输出为适合复习背诵的 Word 和 Markdown 文档。
+从超星学习通导出已完成作业，调用 DeepSeek API 生成逐题解析，最终输出为适合复习背诵的 Word 和 Markdown 文档。也可以生成更短的速记刷背资料，用于考前快速过题、记关键词和自测。
 
 两阶段流水线：
 
@@ -55,10 +55,12 @@ AI_MAX_TOKENS=2000
 AI_VISION_ENABLED=false
 AI_VISION_MAX_IMAGES=4
 DOCX_FONT=Microsoft YaHei
+MEMORY_CARDS_ENABLED=false
 ```
 
 设 `AI_API_KEY` 即可。也兼容 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`。
 当 `AI_VISION_ENABLED=false` 时，程序无法识别包含图片的题目；请开启并将 `AI_MODEL` 改为支持视觉识别的模型，以便正常处理带图片的题目。
+当 `MEMORY_CARDS_ENABLED=true` 时，生成完整复习资料后会额外生成速记刷背 Markdown 和 DOCX。也可以不改环境变量，运行时通过 `--memory` 临时开启。
 
 `CHAOXING_*` 等采集相关变量都有内置默认值，无需在 `.env` 中设置，详见[配置参考](#配置参考)。
 
@@ -100,6 +102,8 @@ uv run main.py
 | `--no-review` | 只采集 JSON，不生成复习资料 |
 | `--review-all` | 生成复习资料时读取当前课程 `raw/` 下全部 JSON |
 | `--verify-answers` | 启用 AI 答案校验，标记可能出错的答案 |
+| `--memory` | 生成复习资料时额外生成速记刷背 Markdown 和 DOCX |
+| `--no-memory` | 即使 `.env` 开启了速记卡，也临时关闭速记生成 |
 | `--output-dir "my-output"` | 指定输出目录（默认 `output`） |
 
 **示例：**
@@ -113,6 +117,9 @@ uv run main.py --course "人工智能基础" --no-review
 
 # 采集后对该课程 raw 目录下全部作业生成复习资料
 uv run main.py --course "人工智能基础" --review-all
+
+# 采集并额外生成速记刷背资料
+uv run main.py --course "计算机组成与结构" --yes --memory
 ```
 
 ### 从已有 JSON 生成复习资料
@@ -137,10 +144,28 @@ uv run homework-review "output/人工智能基础/raw" --output-dir "output/人�
 |------|------|
 | `--dry-run` | 不调用 API，生成占位解析（用于快速检查） |
 | `--verify-answers` | 让模型独立校验导出答案，标记风险题目 |
+| `--memory` | 生成完整复习资料时额外生成速记刷背 Markdown 和 DOCX |
+| `--no-memory` | 即使 `.env` 开启了速记卡，也临时关闭速记生成 |
+| `--memory-only` | 只生成速记刷背资料，适合复用已有 `questions.enriched.json` |
 | `--limit N` | 只处理前 N 道题（测试用） |
 | `--title "复习资料"` | 自定义文档标题 |
 | `--output-dir "path"` | 输出目录 |
 | `--cache "path"` | 解析缓存文件路径 |
+
+### 单独生成速记刷背资料
+
+如果已经有 `questions.enriched.json`，可以只生成速记刷背资料，不重新生成完整解析。推荐使用增强版 JSON 作为输入，因为其中已经包含题目、答案和完整解析，速记卡质量更稳定。
+
+```powershell
+uv run homework-review "output/计算机组成与结构/review/questions.enriched.json" --memory-only --output-dir "output/计算机组成与结构/review" --title "计算机组成与结构"
+```
+
+该命令会输出：
+
+- `计算机组成与结构-速记刷背.md`
+- `计算机组成与结构-速记刷背.docx`
+
+速记卡会包含答案、速记、白话解释、考点、抓手、易错点、自测题和自测答案。遇到计算题或公式题时，会尽量补充公式和步骤。
 
 ## 输出说明
 
@@ -156,6 +181,8 @@ output/
       计算机组成与结构-第一章_第三章-复习资料.docx
       计算机组成与结构-第一章_第三章-复习资料.md
       计算机组成与结构-第一章_第三章-复习资料-复核清单.md
+      计算机组成与结构-第一章_第三章-复习资料-速记刷背.md
+      计算机组成与结构-第一章_第三章-复习资料-速记刷背.docx
       questions.enriched.json         # 增强版 JSON（含解析）
       explanations.cache.json         # 解析缓存（下次运行复用，节省 API 费用）
 ```
@@ -184,6 +211,7 @@ output/
 | `questions.enriched.json` | 结构化题目数据，包含 AI 解析的完整字段 |
 | `explanations.cache.json` | 解析缓存，后续运行直接复用，避免重复调用 API |
 | `*-复核清单.md` | 答案可能出错的题目清单，包含原题、导出答案、模型判断和风险等级 |
+| `*-速记刷背.md` / `*-速记刷背.docx` | 考前快速刷背资料，包含答案、速记、白话解释、考点、抓手、易错点和自测 |
 
 **AI 解析包含的字段：**
 
@@ -209,6 +237,7 @@ output/
 | `AI_VISION_MAX_IMAGES` | `4` | 每道题最多随请求发送的图片数量 |
 | `DOCX_FONT` | `Microsoft YaHei` | Word 文档字体 |
 | `VERIFY_ANSWERS` | `false` | 是否让 AI 独立校验导出答案（可通过 `--verify-answers` 临时覆盖） |
+| `MEMORY_CARDS_ENABLED` | `false` | 是否默认随复习资料生成速记刷背卡（可通过 `--memory` / `--no-memory` 临时覆盖） |
 | `CHAOXING_STATE_PATH` | `.local/chaoxing_state.json` | 登录态保存路径 |
 | `CHAOXING_HEADLESS` | `false` | 是否无头模式启动浏览器 |
 | `CHAOXING_OUTPUT_DIR` | `output` | 采集输出根目录 |

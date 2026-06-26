@@ -18,6 +18,52 @@ class MainCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("用户中断", "\n".join(messages))
 
+    def test_main_memory_flag_overrides_environment_and_passes_to_review(self):
+        captured = {}
+
+        with (
+            patch("sys.argv", ["main.py", "--yes", "--course", "计组", "--memory"]),
+            patch.dict("os.environ", {"MEMORY_CARDS_ENABLED": "false"}, clear=False),
+            patch("main.homework_review.load_dotenv"),
+            patch("main.chaoxing_auth.ensure_login_state", return_value=Path("state.json")),
+            patch("main.chaoxing_auth.load_cookies_from_state", return_value=[]),
+            patch("main.chaoxing_client.ChaoxingClient") as client_cls,
+            patch("main.chaoxing_collect.write_homework_json", return_value=Path("output/raw/a.json")),
+            patch("main.run_review_for_course", side_effect=lambda *args, **kwargs: captured.update(kwargs)),
+        ):
+            client = client_cls.return_value
+            client.get_courses.return_value = [{"name": "计组", "course_id": "1", "class_id": "2"}]
+            client.get_course_page.return_value = {"work_list_url": "https://example.test"}
+            client.get_works.return_value = [{"title": "作业", "status": "已完成"}]
+            client.get_homework.return_value = {"meta": {"homeworkTitle": "作业"}, "questions": []}
+
+            main.main()
+
+        self.assertTrue(captured["memory_enabled"])
+
+    def test_main_no_memory_flag_overrides_enabled_environment(self):
+        captured = {}
+
+        with (
+            patch("sys.argv", ["main.py", "--yes", "--course", "计组", "--no-memory"]),
+            patch.dict("os.environ", {"MEMORY_CARDS_ENABLED": "true"}, clear=False),
+            patch("main.homework_review.load_dotenv"),
+            patch("main.chaoxing_auth.ensure_login_state", return_value=Path("state.json")),
+            patch("main.chaoxing_auth.load_cookies_from_state", return_value=[]),
+            patch("main.chaoxing_client.ChaoxingClient") as client_cls,
+            patch("main.chaoxing_collect.write_homework_json", return_value=Path("output/raw/a.json")),
+            patch("main.run_review_for_course", side_effect=lambda *args, **kwargs: captured.update(kwargs)),
+        ):
+            client = client_cls.return_value
+            client.get_courses.return_value = [{"name": "计组", "course_id": "1", "class_id": "2"}]
+            client.get_course_page.return_value = {"work_list_url": "https://example.test"}
+            client.get_works.return_value = [{"title": "作业", "status": "已完成"}]
+            client.get_homework.return_value = {"meta": {"homeworkTitle": "作业"}, "questions": []}
+
+            main.main()
+
+        self.assertFalse(captured["memory_enabled"])
+
     def test_confirm_prompt_shows_yes_default_value(self):
         prompts = []
 
