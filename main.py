@@ -255,12 +255,23 @@ def run_review_for_course(
         homework_review.render_markdown(enriched, title), encoding="utf-8"
     )
     memory_path = None
+    memory_docx_path = None
+    memory_docx_failed = False
     if memory_enabled:
         memory_path = review_dir / f"{output_stem}-速记刷背.md"
         memory_path.write_text(
             homework_review.render_memory_markdown(enriched, f"{title}-速记刷背"),
             encoding="utf-8",
         )
+        memory_docx_path = review_dir / f"{output_stem}-速记刷背.docx"
+        try:
+            homework_review.write_memory_docx(
+                enriched,
+                f"{title}-速记刷背",
+                memory_docx_path,
+            )
+        except PermissionError:
+            memory_docx_failed = True
     docx_failed = False
     try:
         font = os.getenv("DOCX_FONT") or "Microsoft YaHei"
@@ -277,6 +288,10 @@ def run_review_for_course(
     )
     if memory_path:
         print(f"- 速记刷背：{memory_path}", flush=True)
+    if memory_docx_failed:
+        print("- 速记刷背 DOCX：⚠ 写入失败（文件被占用）", flush=True)
+    elif memory_docx_path:
+        print(f"- 速记刷背 DOCX：{memory_docx_path}", flush=True)
 
 
 def run_cli() -> int:

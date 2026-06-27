@@ -1680,9 +1680,9 @@ def write_memory_docx(questions: list[dict], title: str, output_path: Path) -> N
             current_chapter = chapter
 
         question_paragraph = document.add_paragraph()
-        question_paragraph.paragraph_format.space_before = Pt(14)
-        question_paragraph.paragraph_format.space_after = Pt(8)
-        question_paragraph.paragraph_format.line_spacing = 1.28
+        question_paragraph.paragraph_format.space_before = Pt(9)
+        question_paragraph.paragraph_format.space_after = Pt(4.5)
+        question_paragraph.paragraph_format.line_spacing = 1.2
         question_run = question_paragraph.add_run(f"{index}. {question.get('question', '')}")
         question_run.bold = True
         question_run.font.size = Pt(12.5)
@@ -1890,9 +1890,9 @@ def add_memory_answer_paragraph(document, text: str):
 
     paragraph = document.add_paragraph()
     paragraph.paragraph_format.left_indent = Pt(8)
-    paragraph.paragraph_format.space_before = Pt(3)
-    paragraph.paragraph_format.space_after = Pt(8)
-    paragraph.paragraph_format.line_spacing = 1.28
+    paragraph.paragraph_format.space_before = Pt(2)
+    paragraph.paragraph_format.space_after = Pt(4.5)
+    paragraph.paragraph_format.line_spacing = 1.18
     run = paragraph.add_run(text)
     run.bold = True
     run.font.size = Pt(CALLOUT_FONT_SIZE_PT)
@@ -1960,8 +1960,8 @@ def add_memory_field_paragraph(
         return None
     paragraph = document.add_paragraph()
     paragraph.paragraph_format.left_indent = Pt(12)
-    paragraph.paragraph_format.space_after = Pt(4.5)
-    paragraph.paragraph_format.line_spacing = 1.24
+    paragraph.paragraph_format.space_after = Pt(3)
+    paragraph.paragraph_format.line_spacing = 1.17
     label_run = paragraph.add_run(f"{label}：")
     label_run.bold = True
     label_run.font.size = Pt(10.5)
@@ -2052,8 +2052,12 @@ def add_left_border(paragraph, color: str) -> None:
 def add_separator(document) -> None:
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
+    from docx.shared import Pt
 
     paragraph = document.add_paragraph()
+    paragraph.paragraph_format.space_before = Pt(3)
+    paragraph.paragraph_format.space_after = Pt(5)
+    paragraph.paragraph_format.line_spacing = 1.0
     p_pr = paragraph._p.get_or_add_pPr()
     borders = OxmlElement("w:pBdr")
     bottom = OxmlElement("w:bottom")
@@ -2140,9 +2144,17 @@ def build_outputs(
         save_json(cache_path, cache)
         save_json(progress_path, enriched)
         memory_path = _write_memory_markdown(output_dir, title, enriched)
-        memory_docx_path = _write_memory_docx(output_dir, title, enriched)
+        memory_docx_path = None
+        memory_docx_failed = False
+        try:
+            memory_docx_path = _write_memory_docx(output_dir, title, enriched)
+        except PermissionError:
+            memory_docx_failed = True
         print(f"- 速记刷背：{memory_path}", flush=True)
-        print(f"- 速记刷背 DOCX：{memory_docx_path}", flush=True)
+        if memory_docx_failed:
+            print("- 速记刷背 DOCX：⚠ 写入失败（文件被占用）", flush=True)
+        else:
+            print(f"- 速记刷背 DOCX：{memory_docx_path}", flush=True)
         return enriched
 
     questions = load_questions(input_path)
@@ -2195,7 +2207,13 @@ def build_outputs(
     except PermissionError:
         docx_failed = True
     memory_path = _write_memory_markdown(output_dir, title, enriched) if memory_enabled else None
-    memory_docx_path = _write_memory_docx(output_dir, title, enriched) if memory_enabled else None
+    memory_docx_path = None
+    memory_docx_failed = False
+    if memory_enabled:
+        try:
+            memory_docx_path = _write_memory_docx(output_dir, title, enriched)
+        except PermissionError:
+            memory_docx_failed = True
     print_run_summary(
         build_run_summary(enriched),
         output_dir,
@@ -2205,7 +2223,9 @@ def build_outputs(
     )
     if memory_path:
         print(f"- 速记刷背：{memory_path}", flush=True)
-    if memory_docx_path:
+    if memory_docx_failed:
+        print("- 速记刷背 DOCX：⚠ 写入失败（文件被占用）", flush=True)
+    elif memory_docx_path:
         print(f"- 速记刷背 DOCX：{memory_docx_path}", flush=True)
     return enriched
 

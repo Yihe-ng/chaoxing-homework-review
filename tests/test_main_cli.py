@@ -203,6 +203,54 @@ class MainCliTests(unittest.TestCase):
             Path("output/人工智能基础/review/人工智能基础-混合智能-复习资料-2-复核清单.md"),
         )
 
+    def test_run_review_writes_memory_docx_when_memory_enabled(self):
+        captured = {}
+
+        def fake_write_memory_docx(_, title, output_path):
+            captured["memory_docx_title"] = title
+            captured["memory_docx_path"] = output_path
+
+        with (
+            patch("main.homework_review.load_questions", return_value=[]),
+            patch("main.homework_review.load_cache", return_value={}),
+            patch("main.homework_review.enrich_questions", return_value=[]),
+            patch("main.homework_review.enrich_memory_cards", return_value=[]),
+            patch("main.homework_review.update_cache", return_value={}),
+            patch("main.homework_review.save_json"),
+            patch("main.review_naming.load_homework_titles", return_value=["混合智能"]),
+            patch(
+                "main.review_naming.build_review_title",
+                return_value="人工智能基础-混合智能-复习资料",
+            ),
+            patch(
+                "main.review_naming.unique_output_stem",
+                return_value="人工智能基础-混合智能-复习资料",
+            ),
+            patch("main.homework_review.render_markdown", return_value="markdown"),
+            patch("main.homework_review.render_memory_markdown", return_value="memory"),
+            patch("pathlib.Path.write_text"),
+            patch("main.homework_review.write_docx"),
+            patch("main.homework_review.write_memory_docx", fake_write_memory_docx),
+            patch("main.homework_review.print_run_summary"),
+        ):
+            main.run_review_for_course(
+                Path("output"),
+                "人工智能基础",
+                input_paths=[Path("output/人工智能基础/raw/混合智能.json")],
+                review_all=False,
+                verify_answers=False,
+                memory_enabled=True,
+            )
+
+        self.assertEqual(
+            captured["memory_docx_title"],
+            "人工智能基础-混合智能-复习资料-速记刷背",
+        )
+        self.assertEqual(
+            captured["memory_docx_path"],
+            Path("output/人工智能基础/review/人工智能基础-混合智能-复习资料-速记刷背.docx"),
+        )
+
     def test_run_review_all_keeps_complete_review_title(self):
         captured = {}
 

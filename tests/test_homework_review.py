@@ -689,13 +689,26 @@ class HomeworkReviewTests(unittest.TestCase):
         self.assertIn('w:fill="E8EEF5"', xml)
 
         self.assertEqual(len(document.tables), 0)
+        question_paragraph = next(
+            paragraph for paragraph in document.paragraphs if paragraph.text.startswith("1. ")
+        )
+        self.assertLessEqual(question_paragraph.paragraph_format.space_before.pt, 10)
+        self.assertLessEqual(question_paragraph.paragraph_format.space_after.pt, 5)
+        self.assertGreaterEqual(question_paragraph.paragraph_format.line_spacing, 1.18)
+        answer_paragraph = next(
+            paragraph for paragraph in document.paragraphs if paragraph.text.startswith("答案：")
+        )
+        self.assertLessEqual(answer_paragraph.paragraph_format.space_after.pt, 5)
+        self.assertGreaterEqual(answer_paragraph.paragraph_format.line_spacing, 1.17)
+        self.assertLessEqual(answer_paragraph.paragraph_format.line_spacing, 1.19)
         memory_paragraph = next(
             paragraph for paragraph in document.paragraphs if paragraph.text.startswith("白话：")
         )
         self.assertLessEqual(memory_paragraph.paragraph_format.left_indent.pt, 16)
         self.assertIsNone(memory_paragraph.paragraph_format.first_line_indent)
-        self.assertLessEqual(memory_paragraph.paragraph_format.space_after.pt, 5)
-        self.assertGreaterEqual(memory_paragraph.paragraph_format.line_spacing, 1.24)
+        self.assertLessEqual(memory_paragraph.paragraph_format.space_after.pt, 3)
+        self.assertGreaterEqual(memory_paragraph.paragraph_format.line_spacing, 1.16)
+        self.assertLessEqual(memory_paragraph.paragraph_format.line_spacing, 1.18)
         self_test_answer = next(
             paragraph
             for paragraph in document.paragraphs
@@ -757,6 +770,51 @@ class HomeworkReviewTests(unittest.TestCase):
             self.assertTrue((output_dir / "计算机组成与结构-速记刷背.docx").exists())
             saved = json.loads(enriched_path.read_text(encoding="utf-8"))
             self.assertEqual(saved[0]["memory_card"]["cue"], "看到主存一起出现，选主机。")
+
+    def test_build_outputs_memory_docx_permission_error_does_not_abort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_dir = root / "raw"
+            output_dir = root / "review"
+            raw_dir.mkdir()
+            (raw_dir / "homework.json").write_text(
+                json.dumps(
+                    {
+                        "meta": {"courseName": "计算机组成与结构", "homeworkTitle": "第一章作业"},
+                        "questions": [
+                            {
+                                "type": "单选题",
+                                "question": "主机包含什么？",
+                                "options": ["A. CPU", "B. CPU和主存"],
+                                "answer": "B",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                input=str(raw_dir),
+                output_dir=str(output_dir),
+                cache=None,
+                title="计算机组成与结构",
+                dry_run=True,
+                verify_answers=False,
+                limit=None,
+                memory=True,
+                no_memory=False,
+                memory_only=False,
+            )
+
+            with patch(
+                "scripts.homework_review.write_memory_docx",
+                side_effect=PermissionError("file is open"),
+            ):
+                result = homework_review.build_outputs(args)
+
+            self.assertEqual(len(result), 1)
+            self.assertTrue((output_dir / "计算机组成与结构-速记刷背.md").exists())
 
     def test_correct_option_matching_does_not_match_substrings(self):
         self.assertFalse(
