@@ -160,8 +160,8 @@ def _parse_question_block(block, index: int, *, page_url: str = "") -> dict:
         "answer": answer,
         "score": _score(block),
         "images": images,
-        # TODO: Parse platform-provided explanations when Chaoxing exposes
-        # them. Current fixtures do not include homework with existing analysis.
+        # TODO: 学习通页面暴露平台解析后，解析平台自带解析。
+        # 当前测试样本暂不包含已有解析的作业。
         "analysis": "",
         "answer_visibility": answer_visibility,
         "raw_preview": clean_text(block.get_text(" "))[:500],
@@ -171,8 +171,7 @@ def _parse_question_block(block, index: int, *, page_url: str = "") -> dict:
 def _question_type(block) -> str:
     text = clean_text(_first_text(block, ".colorShallow"))
     if not text:
-        # TODO: Add layout samples for short-answer, essay, material,
-        # matching, and other non-choice Chaoxing question types.
+        # TODO: 补充简答题、论述题、材料题、匹配题等非选择题的页面样本。
         match = re.search(r"[（(](单选题|多选题|判断题|填空题)[）)]", block.get_text(" "))
         text = match.group(1) if match else ""
     return text.strip("()（） ")

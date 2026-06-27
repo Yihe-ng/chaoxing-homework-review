@@ -15,6 +15,8 @@ def main() -> None:
     parser.add_argument("--no-review", action="store_true", help="Collect JSON only, without running homework-review.")
     parser.add_argument("--review-all", action="store_true", help="When reviewing after collection, use all JSON files in the course raw directory.")
     parser.add_argument("--verify-answers", action="store_true", default=None, help="Enable answer verification during review.")
+    parser.add_argument("--memory", action="store_true", help="Generate memory-card Markdown during review.")
+    parser.add_argument("--no-memory", action="store_true", help="Disable memory-card generation even if enabled in .env.")
     parser.add_argument("--course", action="append", help="Course keyword. Can be repeated. Skips the course search prompt.")
     parser.add_argument("--yes", action="store_true", help="Use defaults for prompts when possible.")
     args = parser.parse_args()
@@ -25,7 +27,9 @@ def main() -> None:
     model = os.getenv("AI_MODEL") or "deepseek-v4-flash"
     vision = "开启" if homework_review.env_flag("AI_VISION_ENABLED") else "关闭"
     verify = "开启" if args.verify_answers else "关闭"
-    print(f"[info] 模型：{model}  |  图片识别：{vision}  |  答案校验：{verify}", flush=True)
+    memory_enabled = homework_review.memory_enabled_from_args(args)
+    memory = "开启" if memory_enabled else "关闭"
+    print(f"[info] 模型：{model}  |  图片识别：{vision}  |  答案校验：{verify}  |  速记卡：{memory}", flush=True)
     print("[info] 随时可按 Ctrl+C 退出", flush=True)
     output_root = Path(args.output_dir or os.getenv("CHAOXING_OUTPUT_DIR", "output"))
 
@@ -86,6 +90,7 @@ def main() -> None:
             input_paths=written,
             review_all=args.review_all,
             verify_answers=args.verify_answers,
+            memory_enabled=memory_enabled,
         )
 
 
@@ -187,6 +192,7 @@ def run_review_for_course(
     input_paths: list[Path] | None = None,
     review_all: bool = False,
     verify_answers: bool,
+    memory_enabled: bool = False,
 ) -> None:
     safe_course = chaoxing_collect.safe_filename(course_name)
     raw_dir = output_root / safe_course / "raw"
@@ -232,6 +238,13 @@ def run_review_for_course(
         on_consecutive_failures=on_consecutive_failures,
     )
     cache = homework_review.update_cache(cache, enriched)
+    if memory_enabled:
+        enriched = homework_review.enrich_memory_cards(
+            enriched,
+            cache=cache,
+            cache_writer=cache_writer,
+        )
+        cache = homework_review.update_cache(cache, enriched)
     homework_review.save_json(cache_path, cache)
     homework_review.save_json(review_dir / "questions.enriched.json", enriched)
     review_needed_path.write_text(
@@ -241,6 +254,24 @@ def run_review_for_course(
     markdown_path.write_text(
         homework_review.render_markdown(enriched, title), encoding="utf-8"
     )
+    memory_path = None
+    memory_docx_path = None
+    memory_docx_failed = False
+    if memory_enabled:
+        memory_path = review_dir / f"{output_stem}-速记刷背.md"
+        memory_path.write_text(
+            homework_review.render_memory_markdown(enriched, f"{title}-速记刷背"),
+            encoding="utf-8",
+        )
+        memory_docx_path = review_dir / f"{output_stem}-速记刷背.docx"
+        try:
+            homework_review.write_memory_docx(
+                enriched,
+                f"{title}-速记刷背",
+                memory_docx_path,
+            )
+        except PermissionError:
+            memory_docx_failed = True
     docx_failed = False
     try:
         font = os.getenv("DOCX_FONT") or "Microsoft YaHei"
@@ -255,7 +286,22 @@ def run_review_for_course(
         docx_failed=docx_failed,
         review_needed_path=review_needed_path,
     )
+    if memory_path:
+        print(f"- 速记刷背：{memory_path}", flush=True)
+    if memory_docx_failed:
+        print("- 速记刷背 DOCX：⚠ 写入失败（文件被占用）", flush=True)
+    elif memory_docx_path:
+        print(f"- 速记刷背 DOCX：{memory_docx_path}", flush=True)
+
+
+def run_cli() -> int:
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n用户中断，已退出。重新运行命令可继续。", flush=True)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_cli())
